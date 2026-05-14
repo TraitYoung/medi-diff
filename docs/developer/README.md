@@ -1,0 +1,13 @@
+# 开发者自用文档（个人备忘）
+
+这套内容**只对维护本仓库的自己**有用：**不保证**文风适合答辩、合作方或审稿人。对外请以根目录 **`README.md`** 与 **`docs/评价体系说明.md`** 等为口径。
+
+**主线约定速查**（2026-05）：**CBIS_CLEAN_V2** + **LoRA `mammo_sd15_v4_clean`**；**标签守护**与 **`run_mammo_sd15` 默认开启**（**`--no-legacy-label-guard`** 可关），**bg-clean** 默认关；**`run_full_report` / `run_generate_eval_advise` 与子进程默认开后处理**（`--no-postprocess` 可选）——见 **`docs/开发日志.md`** 与 **`README.md`**。
+
+**答辩前自检**：`python3 scripts/tools/verify_ui_wiring.py`（可选 `--strict`）；手册 **`docs/用户操作手册.md` §7**。
+
+| 文件 | 干嘛用 |
+|------|--------|
+| [`工作台备忘.md`](工作台备忘.md) | 怎么快速理解系统在干什么、和大模型会话时怎么省事、评审/流水线常见坑 |
+
+之后如果笔记变长，可以再拆：`命令速查.md`、`评审调试.md` 等，索引仍放在本 README。

@@ -1,0 +1,951 @@
+#!/usr/bin/env python3
+"""Mammography image generation via Stable Diffusion 1.5 + LoRA img2img.
+
+Default mode: full-image single-pass img2img (no patch grid, fast, no seams).
+Legacy fallback: patch-overlap img2img with global guide + latent smooth field.
+
+Usage:
+    python3 scripts/generation/run_mammo_sd15.py \
+        --base-model-local hf_cache/sd15 \
+        --lora-path outputs/lora/mammo_sd15_v4_clean/final_lora \
+        --metadata-csv datasets/CBIS_CLEAN_V2/metadata_clean.csv \
+        --filter-view MLO --filter-density scattered \
+        --num-images 6 --seed 2026 \
+        --mode full-image \
+        --fullimage-long-side 768 \
+        --fullimage-output-long-side 2048 \
+        --scheduler dpm --num-steps 50
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import logging
+import os
+import sys
+import time
+from datetime import datetime
+from pathlib import Path
+
+import cv2
+import numpy as np
+import torch
+from PIL import Image
+from tqdm import tqdm
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT))
+
+logger = logging.getLogger(__name__)
+
+# ── Utility functions (imported by scripts/core/ modules) ───────────────────
+
+def resize_long_side_gray(gray: np.ndarray, long_side: int) -> np.ndarray:
+    """Resize so long side == long_side, keeping aspect ratio. long_side ≤ 0 means no-op."""
+    if long_side <= 0:
+        return gray
+    h, w = gray.shape
+    cur_long = max(h, w)
+    if cur_long == long_side:
+        return gray
+    scale = long_side / cur_long
+    new_w, new_h = int(round(w * scale)), int(round(h * scale))
+    interp = cv2.INTER_LANCZOS4 if scale > 1 else cv2.INTER_AREA
+    return cv2.resize(gray, (new_w, new_h), interpolation=interp)
+
+
+def enhance_input_contrast(gray: np.ndarray, clahe_clip: float = 0.8,
+                           clahe_grid: int = 8) -> np.ndarray:
+    """Apply CLAHE if median < 40 (dark images)."""
+    if np.median(gray) >= 40:
+        return gray
+    clahe = cv2.createCLAHE(clipLimit=clahe_clip, tileGridSize=(clahe_grid, clahe_grid))
+    return clahe.apply(gray)
+
+
+def _detect_metal_markers(gray: np.ndarray, min_radius: int = 4,
+                          max_radius: int = 30, param1: int = 40,
+                          param2: int = 18) -> list[tuple[int, int, int]]:
+    """Detect BB marker circles via HoughCircles. Returns [(x, y, r), ...]."""
+    blur = cv2.GaussianBlur(gray, (9, 9), 2)
+    circles = cv2.HoughCircles(
+        blur, cv2.HOUGH_GRADIENT, dp=1, minDist=20,
+        param1=param1, param2=param2,
+        minRadius=min_radius, maxRadius=max_radius,
+    )
+    if circles is None:
+        return []
+    return [(int(c[0]), int(c[1]), int(c[2])) for c in circles[0]]
+
+
+def _inpaint_circles(gray: np.ndarray,
+                     circles: list[tuple[int, int, int]]) -> np.ndarray:
+    """Softly suppress detected circle regions without TELEA geometry traces."""
+    result = gray.copy()
+    for x, y, r in circles:
+        pad = max(10, int(r * 4))
+        x1, y1 = max(0, x - pad), max(0, y - pad)
+        x2, y2 = min(gray.shape[1], x + pad), min(gray.shape[0], y + pad)
+        roi = result[y1:y2, x1:x2]
+        if roi.size == 0:
+            continue
+        yy, xx = np.ogrid[y1:y2, x1:x2]
+        core = ((xx - x) ** 2 + (yy - y) ** 2) <= (r + 2) ** 2
+        ring = (((xx - x) ** 2 + (yy - y) ** 2) <= (r + pad // 2) ** 2) & ~core
+        fill = float(np.median(result[y1:y2, x1:x2][ring])) if np.any(ring) else float(np.median(roi))
+        alpha = cv2.GaussianBlur(core.astype(np.float32), (0, 0), sigmaX=max(1.5, r / 2))
+        alpha = np.clip(alpha, 0, 1)
+        result[y1:y2, x1:x2] = (
+            roi.astype(np.float32) * (1 - alpha)
+            + fill * alpha
+        ).astype(np.uint8)
+    return result
+
+
+def _apply_upscale(gray: np.ndarray, mode: str = "none",
+                   factor: float = 2.0) -> np.ndarray:
+    """Upscale result image."""
+    if mode == "none" or factor <= 1.0:
+        return gray
+    h, w = gray.shape
+    new_h, new_w = int(h * factor), int(w * factor)
+    interp = cv2.INTER_LINEAR if mode == "bilinear" else (
+        cv2.INTER_LANCZOS4 if mode == "lanczos" else cv2.INTER_CUBIC)
+    return cv2.resize(gray, (new_w, new_h), interpolation=interp)
+
+
+def _letterbox_to_target(gray: np.ndarray, target_h: int = 768,
+                         target_w: int = 1024) -> np.ndarray:
+    """Letterbox to (target_h, target_w) with zero-padding."""
+    h, w = gray.shape
+    scale = min(target_h / h, target_w / w)
+    new_h, new_w = int(round(h * scale)), int(round(w * scale))
+    resized = cv2.resize(gray, (new_w, new_h), interpolation=cv2.INTER_AREA)
+    pad_h = target_h - new_h
+    pad_w = target_w - new_w
+    top, bottom = pad_h // 2, pad_h - pad_h // 2
+    left, right = pad_w // 2, pad_w - pad_w // 2
+    return cv2.copyMakeBorder(resized, top, bottom, left, right,
+                               cv2.BORDER_CONSTANT, value=0)
+
+
+# ── Source pool ─────────────────────────────────────────────────────────────
+
+def filter_source_pool(metadata_csv: Path, filter_view: str = "",
+                       filter_density: str = "", num_images: int = 8,
+                       source_seed: int | None = None,
+                       source_quality_sort: bool = True,
+                       max_aspect_ratio: float = 2.2) -> list[dict]:
+    """Filter metadata CSV, return list of source entries with image_path etc."""
+    import pandas as pd
+
+    df = pd.read_csv(metadata_csv)
+    # Support both 'image_path' (legacy) and 'src' (CBIS_CLEAN_V2) column names
+    if "image_path" not in df.columns and "src" in df.columns:
+        df = df.rename(columns={"src": "image_path"})
+    needed = ["image_path", "view", "density"]
+    for col in needed:
+        if col not in df.columns:
+            raise KeyError(f"Metadata CSV missing column: {col}")
+
+    if filter_view:
+        df = df[df["view"].str.upper() == filter_view.upper()]
+    if filter_density:
+        density_map = {"fatty": 1, "scattered": 2,
+                       "heterogeneous": 3, "dense": 4}
+        target = density_map.get(filter_density.lower())
+        if target is not None:
+            df = df[df["density"].apply(
+                lambda x: density_map.get(str(x).lower(), -1)) == target]
+
+    # Filter extreme aspect ratios
+    if "width" in df.columns and "height" in df.columns:
+        df = df[df.apply(
+            lambda r: (max(r["width"], r["height"]) /
+                       max(min(r["width"], r["height"]), 1)) <= max_aspect_ratio,
+            axis=1)]
+
+    entries = list(df.to_dict("records"))
+    rng = np.random.RandomState(
+        source_seed if source_seed is not None
+        else int(time.time() * 1000) % 2**31)
+    rng.shuffle(entries)
+
+    # Do not rank by file size. Large JPEGs often include wide black canvas,
+    # burned-in labels, or marker-heavy views; rank by image-derived geometry
+    # after the actual file is loaded instead.
+
+    # Shape quality pre-filter: reject sources with badly fractured or non-oval contours
+    good_entries = []
+    rejected = 0
+    for e in entries:
+        path = e.get("image_path", "")
+        if not path or not os.path.exists(path):
+            good_entries.append(e)
+            continue
+        try:
+            src = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
+            if src is None:
+                good_entries.append(e)
+                continue
+            h, w = src.shape[:2]
+            actual_aspect = max(h, w) / max(min(h, w), 1)
+            if actual_aspect > max_aspect_ratio:
+                rejected += 1
+                continue
+            otsu_v, _ = cv2.threshold(src, 0, 255,
+                                      cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+            _, bin_img = cv2.threshold(src, max(int(otsu_v * 0.5), 8),
+                                       255, cv2.THRESH_BINARY)
+            k_cl = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (25, 25))
+            bin_img = cv2.morphologyEx(bin_img, cv2.MORPH_CLOSE, k_cl, iterations=2)
+            cnts, _ = cv2.findContours(bin_img, cv2.RETR_EXTERNAL,
+                                       cv2.CHAIN_APPROX_NONE)
+            if not cnts:
+                good_entries.append(e)
+                continue
+            c = max(cnts, key=cv2.contourArea)
+            area = float(cv2.contourArea(c))
+            if area < 100:
+                good_entries.append(e)
+                continue
+            area_frac = area / max(float(h * w), 1.0)
+            if area_frac < 0.08 or area_frac > 0.85:
+                rejected += 1
+                continue
+            peri = float(cv2.arcLength(c, True))
+            circ = 4 * np.pi * area / max(peri ** 2, 1.0)
+            hull = cv2.convexHull(c)
+            hull_area = float(cv2.contourArea(hull))
+            convex_defect = (hull_area - area) / max(hull_area, 1.0)
+            # Reject: too non-oval (circ<0.30) or too concave (>45% convex hull area missing)
+            if circ < 0.30 or convex_defect > 0.45:
+                rejected += 1
+                continue
+            tissue_mask = np.zeros_like(src, dtype=np.uint8)
+            cv2.drawContours(tissue_mask, [c], -1, 255, -1)
+            tissue_protect = cv2.dilate(
+                tissue_mask,
+                cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (31, 31)),
+                iterations=1,
+            )
+            bg_vals = src[tissue_protect == 0]
+            bright_thr = (
+                max(float(np.percentile(bg_vals, 96.0)), 45.0)
+                if len(bg_vals) > 500 else max(float(np.percentile(src, 99.2)), 95.0)
+            )
+            bg_bright = ((src >= bright_thr) & (tissue_protect == 0)).astype(np.uint8) * 255
+            n_bg, _, stats_bg, _ = cv2.connectedComponentsWithStats(bg_bright, connectivity=8)
+            bg_marker_area = 0
+            bg_marker_count = 0
+            bg_max_area = int(max(8000, h * w * 0.06))
+            for j in range(1, n_bg):
+                a = int(stats_bg[j, cv2.CC_STAT_AREA])
+                bw = int(stats_bg[j, cv2.CC_STAT_WIDTH])
+                bh = int(stats_bg[j, cv2.CC_STAT_HEIGHT])
+                if 8 <= a <= bg_max_area and bw >= 3 and bh >= 3:
+                    bg_marker_area += a
+                    bg_marker_count += 1
+            bg_marker_frac = bg_marker_area / max(float(h * w), 1.0)
+            bg_marker_penalty = bg_marker_count * 0.18 + bg_marker_frac * 60.0
+
+            tissue_vals = src[tissue_mask > 0]
+            fg_dot_count = 0
+            if len(tissue_vals) > 500:
+                fg_thr = max(float(np.percentile(tissue_vals, 99.85)), bright_thr)
+                fg_bright = ((src >= fg_thr) & (tissue_mask > 0)).astype(np.uint8) * 255
+                n_fg, _, stats_fg, _ = cv2.connectedComponentsWithStats(fg_bright, connectivity=8)
+                for j in range(1, n_fg):
+                    a = int(stats_fg[j, cv2.CC_STAT_AREA])
+                    bw = int(stats_fg[j, cv2.CC_STAT_WIDTH])
+                    bh = int(stats_fg[j, cv2.CC_STAT_HEIGHT])
+                    if 3 <= a <= 90 and max(bw, bh) <= 14:
+                        fg_dot_count += 1
+            fg_dot_penalty = max(0, fg_dot_count - 3) * 0.06
+            e = dict(e)
+            e["_source_quality_score"] = (
+                area_frac * 1.2
+                + circ * 0.35
+                - convex_defect * 0.45
+                - abs(actual_aspect - 1.55) * 0.08
+                - bg_marker_penalty
+                - fg_dot_penalty
+            )
+            good_entries.append(e)
+        except Exception:
+            good_entries.append(e)
+
+    if rejected > 0:
+        logger.debug("Shape filter: rejected %d/%d sources (bad aspect/area/shape)",
+                     rejected, len(entries))
+
+    if source_quality_sort:
+        good_entries.sort(
+            key=lambda e: float(e.get("_source_quality_score", 0.0)),
+            reverse=True,
+        )
+
+    return good_entries[:num_images]
+
+
+def load_source_gray(image_path: str | Path) -> np.ndarray:
+    """Load source mammogram as uint8 grayscale."""
+    img = cv2.imread(str(image_path), cv2.IMREAD_GRAYSCALE)
+    if img is None:
+        raise FileNotFoundError(f"Cannot read source image: {image_path}")
+    return img
+
+
+# ── Prompt alignment ────────────────────────────────────────────────────────
+
+def _build_prompt(filter_view: str, filter_density: str,
+                  base_prompt: str) -> str:
+    """Rewrite prompt to match LoRA caption phrasing for a single density tier."""
+    density_tiers = {"fatty", "scattered", "heterogeneous", "dense"}
+    if filter_density.lower() not in density_tiers:
+        return base_prompt
+    view_map = {"MLO": "MLO view", "CC": "CC view"}
+    view_phrase = view_map.get(filter_view.upper(), "")
+    density_phrase = f"{filter_density} density"
+    anatomy_phrase = ""
+    if filter_view.upper() == "MLO":
+        anatomy_phrase = (
+            "triangular pectoralis muscle, clear inframammary fold, "
+            "directional fibroglandular strands toward nipple"
+        )
+    parts = [p for p in [view_phrase, density_phrase, anatomy_phrase] if p]
+    if parts:
+        return (
+            f"medical grayscale mammogram, {' '.join(parts)}, "
+            "fine ligament texture, FFDM, no text, no labels"
+        )
+    return base_prompt
+
+
+# ── Core generation functions (imported by scripts/core/ modules) ───────────
+
+def fullimage_generate(
+    src_gray: np.ndarray,
+    pipe,
+    prompt: str,
+    negative_prompt: str,
+    strength: float = 0.42,
+    guidance_scale: float = 7.9,
+    num_inference_steps: int = 50,
+    generator: torch.Generator | None = None,
+    gabor_alpha: float = 0.5,
+    fullimage_long_side: int = 768,
+    fullimage_min_short_side: int = 384,
+    fullimage_output_long_side: int = 2048,
+) -> np.ndarray:
+    """Single-pass full-image img2img.
+
+    Scales source so long side ≤ fullimage_long_side, short side ≥
+    fullimage_min_short_side when feasible, hard cap 1024 px.  Output
+    resized so saved long side ≤ fullimage_output_long_side (0 = native).
+    """
+    h, w = src_gray.shape
+    long_edge = max(h, w)
+    short_edge = min(h, w)
+    target_long = min(fullimage_long_side, 1024)
+
+    scale = target_long / long_edge if long_edge > target_long else 1.0
+    new_long = int(round(long_edge * scale))
+    new_short = int(round(short_edge * scale))
+
+    if new_short < fullimage_min_short_side:
+        alt_scale = fullimage_min_short_side / short_edge
+        alt_long = int(round(long_edge * alt_scale))
+        if alt_long <= target_long:
+            new_long, new_short = alt_long, fullimage_min_short_side
+
+    new_long, new_short = (new_long // 8) * 8, (new_short // 8) * 8
+    target_h, target_w = (new_long, new_short) if h >= w else (new_short, new_long)
+
+    src_rgb = cv2.cvtColor(src_gray, cv2.COLOR_GRAY2RGB)
+    src_pil = Image.fromarray(src_rgb).resize((target_w, target_h), Image.LANCZOS)
+
+    result = pipe(
+        prompt=prompt,
+        negative_prompt=negative_prompt,
+        image=src_pil,
+        strength=strength,
+        guidance_scale=guidance_scale,
+        num_inference_steps=num_inference_steps,
+        generator=generator,
+    ).images[0]
+
+    result_gray = np.array(result.convert("L"))
+
+    if fullimage_output_long_side > 0:
+        result_gray = resize_long_side_gray(result_gray, fullimage_output_long_side)
+
+    return result_gray
+
+
+def run_global_guide(
+    pipe,
+    src_gray: np.ndarray,
+    device: torch.device,
+    generator: torch.Generator,
+    guide_scale: float = 0.3,
+    strength: float = 0.25,
+    prompt: str = "",
+    negative_prompt: str = "",
+    num_steps: int = 25,
+) -> np.ndarray:
+    """Low-res global anatomic guide for patch-overlap mode."""
+    h, w = src_gray.shape
+    guide_h, guide_w = (h // 4 // 8) * 8, (w // 4 // 8) * 8
+
+    src_small = cv2.resize(src_gray, (guide_w, guide_h), interpolation=cv2.INTER_AREA)
+    src_rgb = cv2.cvtColor(src_small, cv2.COLOR_GRAY2RGB)
+
+    result = pipe(
+        prompt=prompt,
+        negative_prompt=negative_prompt,
+        image=Image.fromarray(src_rgb),
+        strength=guide_scale,
+        guidance_scale=strength,
+        num_inference_steps=min(num_steps, 25),
+        generator=generator,
+    ).images[0]
+
+    result_gray = np.array(result.convert("L"))
+    return cv2.resize(result_gray, (w, h), interpolation=cv2.INTER_LANCZOS4)
+
+
+def build_latent_smooth_field(h: int, w: int, seed: int = 0) -> np.ndarray:
+    """Low-frequency noise field for cross-patch consistency."""
+    small_h, small_w = max(1, h // 32), max(1, w // 32)
+    g = torch.Generator(device="cpu").manual_seed(seed)
+    small = torch.randn(1, 1, small_h, small_w, generator=g, dtype=torch.float32)
+    field = torch.nn.functional.interpolate(
+        small, size=(h, w), mode="bilinear", align_corners=False)
+    return field.squeeze().numpy()
+
+
+def patch_generate(
+    src_gray: np.ndarray,
+    pipe,
+    prompt: str,
+    negative_prompt: str,
+    strength: float = 0.42,
+    guidance_scale: float = 7.9,
+    num_inference_steps: int = 50,
+    patch_size: int = 640,
+    stride: int = 96,
+    gabor_alpha: float = 0.5,
+    blend_mode: str = "hann",
+    blend_sigma_divisor: float = 1.48,
+    global_guide_gray: np.ndarray | None = None,
+    global_guide_blend: float = 0.44,
+    latent_smooth_field: np.ndarray | None = None,
+    base_seed: int = 2026,
+    bg_min_signal_frac: float = 0.012,
+    bg_pixel_min: int = 4,
+    pyramid_levels: int = 4,
+) -> np.ndarray:
+    """Patch-overlap img2img with Hann-window blending."""
+    h, w = src_gray.shape
+    device = pipe.device
+
+    y_starts = list(range(0, max(1, h - patch_size), stride))
+    y_starts.append(max(0, h - patch_size))
+    x_starts = list(range(0, max(1, w - patch_size), stride))
+    x_starts.append(max(0, w - patch_size))
+    y_starts = sorted(set(y_starts))
+    x_starts = sorted(set(x_starts))
+
+    accum = np.zeros((h, w), dtype=np.float64)
+    weight = np.zeros((h, w), dtype=np.float64)
+
+    # Precompute blend window
+    if blend_mode == "hann":
+        wy = np.hanning(patch_size)
+        wx = np.hanning(patch_size)
+    elif blend_mode == "pyramid":
+        wy = np.hanning(patch_size) ** pyramid_levels
+        wx = np.hanning(patch_size) ** pyramid_levels
+    else:
+        t = np.arange(patch_size)
+        wy = np.clip(np.minimum(t / (patch_size * 0.15),
+                                (patch_size - 1 - t) / (patch_size * 0.15)), 0, 1)
+        wx = wy.copy()
+    window = np.outer(wy, wx)
+
+    for i, y0 in enumerate(tqdm(y_starts, desc="Patches", leave=False)):
+        for j, x0 in enumerate(x_starts):
+            patch_idx = i * len(x_starts) + j
+            g = torch.Generator(device=device).manual_seed(base_seed + patch_idx)
+
+            patch = src_gray[y0:y0 + patch_size, x0:x0 + patch_size]
+            ph, pw = patch.shape
+            if ph < patch_size or pw < patch_size:
+                padded = np.zeros((patch_size, patch_size), dtype=np.uint8)
+                padded[:ph, :pw] = patch
+                patch = padded
+
+            patch_rgb = cv2.cvtColor(patch, cv2.COLOR_GRAY2RGB)
+            patch_pil = Image.fromarray(patch_rgb)
+
+            if global_guide_gray is not None:
+                gp = global_guide_gray[y0:y0 + patch_size, x0:x0 + patch_size]
+                if gp.shape != (patch_size, patch_size):
+                    tmp = np.zeros((patch_size, patch_size), dtype=np.uint8)
+                    tmp[:gp.shape[0], :gp.shape[1]] = gp
+                    gp = tmp
+                patch_pil = Image.blend(
+                    patch_pil,
+                    Image.fromarray(cv2.cvtColor(gp, cv2.COLOR_GRAY2RGB)),
+                    global_guide_blend)
+
+            result = pipe(
+                prompt=prompt, negative_prompt=negative_prompt,
+                image=patch_pil, strength=strength,
+                guidance_scale=guidance_scale,
+                num_inference_steps=num_inference_steps, generator=g,
+            ).images[0]
+
+            result_gray = np.array(result.convert("L"), dtype=np.float64)
+            accum[y0:y0 + patch_size, x0:x0 + patch_size] += result_gray * window
+            weight[y0:y0 + patch_size, x0:x0 + patch_size] += window
+
+    mask = weight > 0
+    result = np.zeros_like(accum)
+    result[mask] = accum[mask] / weight[mask]
+    return np.clip(result, 0, 255).astype(np.uint8)
+
+
+# ── Post-generation helpers ─────────────────────────────────────────────────
+
+def _final_metal_sweep(gray: np.ndarray, max_retries: int = 3) -> np.ndarray:
+    """Detect and inpaint metal BB markers on final image."""
+    for _ in range(max_retries):
+        circles = _detect_metal_markers(gray)
+        if not circles:
+            break
+        gray = _inpaint_circles(gray, circles)
+    return gray
+
+
+def _inpaint_background_bright_markers(gray: np.ndarray) -> np.ndarray:
+    """Darken bright letters/markers in background without inpainting artefacts."""
+    if gray.ndim == 3:
+        gray = cv2.cvtColor(gray, cv2.COLOR_BGR2GRAY)
+    h, w = gray.shape[:2]
+    if h * w < 1000:
+        return gray
+
+    otsu_v, _ = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    _, fg = cv2.threshold(gray, max(int(otsu_v * 0.45), 8), 255, cv2.THRESH_BINARY)
+    k_close = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (31, 31))
+    fg = cv2.morphologyEx(fg, cv2.MORPH_CLOSE, k_close, iterations=2)
+    cnts, _ = cv2.findContours(fg, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not cnts:
+        return gray
+
+    tissue = np.zeros_like(gray, dtype=np.uint8)
+    cv2.drawContours(tissue, [max(cnts, key=cv2.contourArea)], -1, 255, -1)
+    protect_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (21, 21))
+    tissue = cv2.dilate(tissue, protect_k, iterations=1)
+
+    bg_vals = gray[tissue == 0]
+    bright_thr = (
+        max(float(np.percentile(bg_vals, 94.0)), 32.0)
+        if len(bg_vals) > 500 else max(float(np.percentile(gray, 97.0)), 65.0)
+    )
+    candidates = ((gray >= bright_thr) & (tissue == 0)).astype(np.uint8) * 255
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(candidates, connectivity=8)
+    if n <= 1:
+        return gray
+
+    result = gray.copy()
+    max_area = int(max(1200, h * w * 0.06))
+    for i in range(1, n):
+        area = int(stats[i, cv2.CC_STAT_AREA])
+        if area < 6 or area > max_area:
+            continue
+        bw = int(stats[i, cv2.CC_STAT_WIDTH])
+        bh = int(stats[i, cv2.CC_STAT_HEIGHT])
+        if bw < 2 or bh < 2:
+            continue
+        if max(bw, bh) > max(h, w) * 0.20:
+            continue
+
+        x0 = int(stats[i, cv2.CC_STAT_LEFT])
+        y0 = int(stats[i, cv2.CC_STAT_TOP])
+        pad = max(10, min(30, max(bw, bh)))
+        x1, y1 = max(0, x0 - pad), max(0, y0 - pad)
+        x2, y2 = min(w, x0 + bw + pad), min(h, y0 + bh + pad)
+        roi = result[y1:y2, x1:x2]
+        component = labels[y1:y2, x1:x2] == i
+        component = cv2.dilate(
+            component.astype(np.uint8),
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)),
+            iterations=1,
+        ).astype(bool)
+        context = roi[(~component) & (tissue[y1:y2, x1:x2] == 0)]
+        fill = float(np.percentile(context, 10)) if len(context) else float(np.percentile(roi, 10))
+        alpha = cv2.GaussianBlur(component.astype(np.float32), (0, 0), sigmaX=2.5)
+        alpha = np.clip(alpha * 1.15, 0, 1.0)
+        result[y1:y2, x1:x2] = (
+            roi.astype(np.float32) * (1 - alpha)
+            + fill * alpha
+        ).astype(np.uint8)
+
+    return result
+
+
+def _soften_isolated_bright_spots(gray: np.ndarray) -> np.ndarray:
+    """Reduce tiny isolated bright dots while avoiding polygonal inpaint masks."""
+    if gray.ndim == 3:
+        gray = cv2.cvtColor(gray, cv2.COLOR_BGR2GRAY)
+    result = gray.copy()
+    h, w = gray.shape[:2]
+    otsu_v, _ = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    _, fg = cv2.threshold(gray, max(int(otsu_v * 0.55), 12), 255, cv2.THRESH_BINARY)
+    k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (19, 19))
+    fg = cv2.morphologyEx(fg, cv2.MORPH_CLOSE, k, iterations=1)
+    fg = cv2.erode(fg, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7)), iterations=1)
+    vals = gray[fg > 0]
+    if len(vals) < 500:
+        return result
+
+    hi_thr = max(float(np.percentile(vals, 99.75)), float(otsu_v) * 1.15)
+    bright = ((gray >= hi_thr) & (fg > 0)).astype(np.uint8) * 255
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(bright, connectivity=8)
+    for i in range(1, n):
+        area = int(stats[i, cv2.CC_STAT_AREA])
+        if area < 3 or area > 120:
+            continue
+        bw = int(stats[i, cv2.CC_STAT_WIDTH])
+        bh = int(stats[i, cv2.CC_STAT_HEIGHT])
+        if max(bw, bh) > 18:
+            continue
+        x0 = int(stats[i, cv2.CC_STAT_LEFT])
+        y0 = int(stats[i, cv2.CC_STAT_TOP])
+        pad = 12
+        x1, y1 = max(0, x0 - pad), max(0, y0 - pad)
+        x2, y2 = min(w, x0 + bw + pad), min(h, y0 + bh + pad)
+        roi = result[y1:y2, x1:x2]
+        component = labels[y1:y2, x1:x2] == i
+        context = roi[(~component) & (fg[y1:y2, x1:x2] > 0)]
+        if len(context) < 12:
+            continue
+        fill = float(np.percentile(context, 65))
+        alpha = cv2.GaussianBlur(component.astype(np.float32), (0, 0), sigmaX=1.6)
+        alpha = np.clip(alpha * 0.85, 0, 0.85)
+        result[y1:y2, x1:x2] = (
+            roi.astype(np.float32) * (1 - alpha)
+            + fill * alpha
+        ).astype(np.uint8)
+    return result
+
+
+# ── Test pattern ────────────────────────────────────────────────────────────
+
+def _make_test_pattern(h: int = 768, w: int = 1024) -> np.ndarray:
+    """Synthetic breast-shaped test pattern for debugging."""
+    gray = np.zeros((h, w), dtype=np.uint8)
+    center = (w // 2, h // 2 - 30)
+    axes = (w // 3, h * 2 // 5)
+    cv2.ellipse(gray, center, axes, 0, 0, 360, 200, -1)
+    noise = np.random.RandomState(42).randint(0, 30, (h, w), dtype=np.uint8)
+    mask = gray > 0
+    gray[mask] = np.clip(gray[mask].astype(int) + noise[mask].astype(int) - 15,
+                         0, 255).astype(np.uint8)
+    return gray
+
+
+# ── CLI ─────────────────────────────────────────────────────────────────────
+
+def main() -> None:
+    from scripts.core.pipeline_config import GenParams
+    from scripts.core.label_guard import (
+        erase_background_labels, erase_bright_border_labels,
+        clean_background, feather_canvas_edge)
+    from scripts.core.postprocess_pipeline import run_postprocess_on_image
+
+    p = argparse.ArgumentParser(
+        description="SD1.5+LoRA mammography image generation",
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+
+    # Model
+    g = p.add_argument_group("Model")
+    g.add_argument("--base-model-local", type=str, default=None)
+    g.add_argument("--base-model", type=str, default="runwayml/stable-diffusion-v1-5")
+    g.add_argument("--lora-path", type=str,
+                   default="outputs/lora/mammo_sd15_v6_allMLO/final_lora")
+    g.add_argument("--scheduler", type=str, default="dpm",
+                   choices=["dpm", "pndm", "ddim"])
+
+    # Mode
+    g = p.add_argument_group("Generation Mode")
+    g.add_argument("--mode", type=str, default="full-image",
+                   choices=["full-image", "patch"])
+    g.add_argument("--fullimage-long-side", type=int, default=768)
+    g.add_argument("--fullimage-min-short-side", type=int, default=384)
+    g.add_argument("--fullimage-output-long-side", type=int, default=2048)
+
+    # Patch
+    g = p.add_argument_group("Patch (patch mode)")
+    g.add_argument("--patch-size", type=int, default=640)
+    g.add_argument("--overlap-ratio", type=float, default=0.85)
+    g.add_argument("--stride", type=int, default=None)
+    g.add_argument("--blend-mode", type=str, default="hann",
+                   choices=["hann", "pyramid", "linear"])
+    g.add_argument("--blend-sigma-divisor", type=float, default=1.48)
+    g.add_argument("--pyramid-levels", type=int, default=4)
+    g.add_argument("--gabor-alpha", type=float, default=0.55)
+
+    # Global guide
+    g = p.add_argument_group("Global Guide")
+    g.add_argument("--global-guide", action="store_true", default=True)
+    g.add_argument("--no-global-guide", action="store_false", dest="global_guide")
+    g.add_argument("--global-guide-strength", type=float, default=0.25)
+    g.add_argument("--global-guide-blend", type=float, default=0.44)
+    g.add_argument("--global-guide-scale", type=float, default=0.3)
+    g.add_argument("--global-guide-cfg-scale", type=float, default=7.5)
+
+    # Sampling
+    g = p.add_argument_group("Sampling")
+    g.add_argument("--num-steps", type=int, default=50)
+    g.add_argument("--strength", type=float, default=GenParams.strength)
+    g.add_argument("--guidance-scale", type=float, default=GenParams.guidance_scale)
+    g.add_argument("--negative-prompt", type=str, default=None,
+                   help="覆盖 GenParams.negative_prompt")
+
+    # Source
+    g = p.add_argument_group("Source Selection")
+    g.add_argument("--metadata-csv", type=str,
+                   default="datasets/CBIS_CLEAN_V2/metadata_clean.csv")
+    g.add_argument("--filter-view", type=str, default="")
+    g.add_argument("--filter-density", type=str, default="")
+    g.add_argument("--num-images", type=int, default=6)
+    g.add_argument("--seed", type=int, default=2026)
+    g.add_argument("--source-seed", type=int, default=None)
+    g.add_argument("--source-quality-sort", action="store_true", default=True)
+    g.add_argument("--no-source-quality-sort", action="store_false",
+                   dest="source_quality_sort")
+    g.add_argument("--max-source-aspect-ratio", type=float, default=2.2)
+
+    # Output
+    g = p.add_argument_group("Output")
+    g.add_argument("--output-base", type=str, default="outputs/generated")
+    g.add_argument("--output-subdir-prefix", type=str, default="sd15")
+
+    # Postprocess
+    g = p.add_argument_group("Postprocess")
+    g.add_argument("--postprocess", action="store_true", default=True)
+    g.add_argument("--no-postprocess", action="store_false", dest="postprocess")
+
+    # Label guard
+    g = p.add_argument_group("Label Guard")
+    g.add_argument("--legacy-label-guard", action="store_true", default=True)
+    g.add_argument("--no-legacy-label-guard", action="store_false",
+                   dest="legacy_label_guard")
+    g.add_argument("--preclean-border-labels", action="store_true", default=False)
+    g.add_argument("--bg-clean", action="store_true", default=False)
+
+    # VL
+    g.add_argument("--no-qwen-vl", action="store_true", default=False)
+
+    args = p.parse_args()
+
+    # Resolve paths
+    def _resolve(p: str) -> Path:
+        path = Path(p)
+        return path if path.is_absolute() else ROOT / path
+
+    base_model_local = _resolve(args.base_model_local) if args.base_model_local else None
+    lora_path = _resolve(args.lora_path)
+    metadata_csv = _resolve(args.metadata_csv)
+    output_base = _resolve(args.output_base)
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    logger.info("Device: %s  Mode: %s", device, args.mode)
+
+    # Load model
+    from diffusers import StableDiffusionImg2ImgPipeline, DPMSolverMultistepScheduler, DDIMScheduler
+
+    logger.info("Loading SD1.5 img2img pipeline...")
+    pipe = StableDiffusionImg2ImgPipeline.from_pretrained(
+        str(base_model_local) if base_model_local else args.base_model,
+        torch_dtype=torch.float16 if device.type == "cuda" else torch.float32,
+        safety_checker=None,
+    )
+    pipe.to(device)
+
+    if args.scheduler == "dpm":
+        pipe.scheduler = DPMSolverMultistepScheduler.from_config(pipe.scheduler.config)
+    elif args.scheduler == "ddim":
+        pipe.scheduler = DDIMScheduler.from_config(pipe.scheduler.config)
+
+    if lora_path.exists():
+        logger.info("Loading LoRA: %s", lora_path)
+        if (lora_path / "adapter_model.safetensors").is_file():
+            from peft import PeftModel
+
+            pipe.unet = PeftModel.from_pretrained(pipe.unet, str(lora_path))
+            logger.info("Loaded PEFT LoRA adapter into UNet")
+        else:
+            pipe.load_lora_weights(str(lora_path))
+    else:
+        logger.warning("LoRA path not found: %s", lora_path)
+
+    # Source pool
+    if metadata_csv.is_file():
+        sources = filter_source_pool(
+            metadata_csv=metadata_csv, filter_view=args.filter_view,
+            filter_density=args.filter_density, num_images=args.num_images,
+            source_seed=args.source_seed,
+            source_quality_sort=args.source_quality_sort,
+            max_aspect_ratio=args.max_source_aspect_ratio)
+        logger.info("Selected %d sources", len(sources))
+    else:
+        logger.warning("Metadata not found: %s. Using test patterns.", metadata_csv)
+        sources = [{"image_path": ""} for _ in range(args.num_images)]
+
+    # Output dir
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    out_dir = output_base / f"{args.output_subdir_prefix}_{ts}"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    # Prompts
+    prompt = _build_prompt(args.filter_view, args.filter_density, GenParams.prompt)
+    neg_prompt = args.negative_prompt if args.negative_prompt else GenParams.negative_prompt
+
+    # Stride
+    stride = args.stride if args.stride is not None else int(
+        args.patch_size * (1 - args.overlap_ratio))
+
+    # Save params
+    run_params = {
+        "base_model_local": str(base_model_local) if base_model_local else None,
+        "lora_path": str(lora_path),
+        "seed": args.seed,
+        "source_seed": args.source_seed,
+        "source_quality_sort": args.source_quality_sort,
+        "num_images": args.num_images,
+        "mode": args.mode,
+        "strength": args.strength,
+        "guidance_scale": args.guidance_scale,
+        "num_steps": args.num_steps,
+        "scheduler": args.scheduler,
+        "gabor_alpha": args.gabor_alpha,
+        "sharpen_strength": 0.32,
+        "postprocess_freq": args.postprocess,
+        "postprocess_edge_feather": True,
+        "legacy_label_guard": args.legacy_label_guard,
+        "bg_clean": args.bg_clean,
+        "canvas_edge_feather": 3,
+        "metadata_csv": str(metadata_csv),
+        "filter_view": args.filter_view,
+        "filter_density": args.filter_density,
+        "fullimage_long_side": args.fullimage_long_side,
+        "fullimage_output_long_side": args.fullimage_output_long_side,
+        "fullimage_min_short_side": args.fullimage_min_short_side,
+        "output_dir": str(out_dir),
+    }
+    with open(out_dir / "run_params.json", "w", encoding="utf-8") as f:
+        json.dump(run_params, f, indent=2, ensure_ascii=False)
+
+    source_map: dict[str, str] = {}
+
+    logger.info("Generating %d images...", len(sources))
+    for idx, src_entry in enumerate(tqdm(sources)):
+        src_path = src_entry.get("image_path", "")
+        if src_path and os.path.exists(src_path):
+            src_gray = load_source_gray(src_path)
+        else:
+            src_gray = _make_test_pattern()
+
+        # Pre-filter
+        if args.legacy_label_guard and args.preclean_border_labels:
+            src_gray = erase_bright_border_labels(src_gray)
+        if args.legacy_label_guard:
+            src_gray = _inpaint_background_bright_markers(src_gray)
+
+        src_gray = enhance_input_contrast(src_gray)
+        if args.mode == "patch":
+            src_gray = _letterbox_to_target(src_gray)
+
+        base_seed = args.seed + idx * 17
+        t0 = time.time()
+
+        if args.mode == "full-image":
+            gen = torch.Generator(device=device).manual_seed(base_seed)
+            result = fullimage_generate(
+                src_gray=src_gray, pipe=pipe, prompt=prompt,
+                negative_prompt=neg_prompt, strength=args.strength,
+                guidance_scale=args.guidance_scale,
+                num_inference_steps=args.num_steps, generator=gen,
+                fullimage_long_side=args.fullimage_long_side,
+                fullimage_min_short_side=args.fullimage_min_short_side,
+                fullimage_output_long_side=args.fullimage_output_long_side)
+        else:
+            global_guide_gray = None
+            if args.global_guide:
+                gg = torch.Generator(device=device).manual_seed(base_seed + 3)
+                global_guide_gray = run_global_guide(
+                    pipe, src_gray, device, gg,
+                    guide_scale=args.global_guide_scale,
+                    strength=args.global_guide_strength,
+                    prompt=prompt, negative_prompt=neg_prompt,
+                    num_steps=args.num_steps)
+            latent_field = build_latent_smooth_field(768, 1024, seed=base_seed + 91)
+            result = patch_generate(
+                src_gray=src_gray, pipe=pipe, prompt=prompt,
+                negative_prompt=neg_prompt, strength=args.strength,
+                guidance_scale=args.guidance_scale,
+                num_inference_steps=args.num_steps,
+                patch_size=args.patch_size, stride=stride,
+                gabor_alpha=args.gabor_alpha, blend_mode=args.blend_mode,
+                blend_sigma_divisor=args.blend_sigma_divisor,
+                global_guide_gray=global_guide_gray,
+                global_guide_blend=args.global_guide_blend,
+                latent_smooth_field=latent_field, base_seed=base_seed,
+                pyramid_levels=args.pyramid_levels)
+
+        logger.info("  [%d/%d] %.1fs", idx + 1, len(sources),
+                     time.time() - t0)
+
+        # Post-filter
+        if args.legacy_label_guard:
+            result = erase_background_labels(result)
+            result = erase_bright_border_labels(result)
+            if args.bg_clean:
+                result = clean_background(result)
+            result = feather_canvas_edge(result, feather_px=3)
+
+        result = _soften_isolated_bright_spots(result)
+
+        result = _final_metal_sweep(result)
+        result = _inpaint_background_bright_markers(result)
+
+        if args.postprocess:
+            from scripts.core.pipeline_config import PostprocessParams
+            pp = PostprocessParams(enabled=True, blend=0.4, fill_voids=False,
+                                   sharpen_strength=0.32,
+                                   edge_feather=True,
+                                   feather_ksize=3)
+            result = run_postprocess_on_image(result, pp)
+            result = _soften_isolated_bright_spots(result)
+            result = _final_metal_sweep(result)
+            result = _inpaint_background_bright_markers(result)
+
+        out_name = f"sd15_{idx:04d}.png"
+        Image.fromarray(result).save(out_dir / out_name)
+        source_map[out_name] = src_path if src_path else f"pattern_{idx}"
+
+    with open(out_dir / "source_map.json", "w", encoding="utf-8") as f:
+        json.dump(source_map, f, indent=2, ensure_ascii=False)
+
+    logger.info("Done. %d images → %s", len(source_map), out_dir)
+
+
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO,
+                        format="%(asctime)s [%(levelname)s] %(message)s")
+    main()

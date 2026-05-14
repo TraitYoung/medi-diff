@@ -1,0 +1,42 @@
+.env
+.env.*
+!.env.example
+__pycache__/
+*.py[cod]
+.Python
+*.egg-info/
+.eggs/
+dist/
+build/
+*.log
+.gradio_gallery_cache/
+.ipynb_checkpoints/
+
+# Tooling artifacts
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+htmlcov/
+.coverage
+*.coverage.*
+
+# Large data/model/output directories (NOT pushed to GitHub)
+outputs/
+datasets/
+hf_cache/
+*.safetensors
+*.ckpt
+*.pth
+
+# Tool configs (local session data)
+.claude/
+.superpowers/
+.cursor/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db

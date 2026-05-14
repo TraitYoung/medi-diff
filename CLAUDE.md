@@ -1,0 +1,222 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Project overview
+
+A mammography (FFDM) image generation and evaluation system using **Stable Diffusion 1.5 + LoRA** fine-tuned on CBIS-DDSM. **Default generation is full-image single-pass img2img** (no patch grid; fast, no seam banding from tiling). **Patch-overlap img2img** remains a CLI/UI fallback. Bachelor's capstone project. Pipeline: data preprocessing → LoRA training → conditional generation → automated quality evaluation → optional LLM advisor reports.
+
+## Common commands
+
+```bash
+# Start Gradio UI + FastAPI backend (default ports: 7860, 8000)
+bash apps/start.sh
+
+# Gradio only / API only / with hot-reload for dev
+bash apps/start.sh --ui-only
+bash apps/start.sh --api-only
+bash apps/start.sh --api-reload
+
+# Stop services
+bash apps/stop.sh
+
+# Generate images (main entry point; default mode is full-image, all defaults match good batches)
+python3 scripts/generation/run_mammo_sd15.py \
+  --base-model-local hf_cache/sd15 \
+  --lora-path outputs/lora/mammo_sd15_v6_allMLO/final_lora \
+  --metadata-csv datasets/CBIS_CLEAN_V2/metadata_clean.csv \
+  --filter-view MLO --filter-density scattered \
+  --num-images 6 --seed 2026 --source-seed 20260513 \
+  --mode full-image \
+  --fullimage-long-side 768 \
+  --fullimage-min-short-side 384 \
+  --fullimage-output-long-side 2048 \
+  --scheduler dpm --num-steps 20 \
+  --strength 0.5 --guidance-scale 8.5 \
+  --gabor-alpha 0.55 \
+  --source-quality-sort --postprocess
+
+# Evaluate generated images
+python3 scripts/evaluation/review_generated_images.py \
+  --images-dir outputs/generated/<batch_dir> \
+  --output-dir outputs/eval/<eval_name> \
+  --no-recursive --eval-profile full --enable-seam-check
+
+# Full automated pipeline (generate → evaluate → advise; primary entry point)
+python3 scripts/assistant/run_generate_eval_advise.py \
+  --metadata-csv datasets/CBIS_CLEAN_V2/metadata_clean.csv \
+  --filter-view MLO --filter-density dense \
+  --num-images 6 --tag-prefix my_run
+
+# Convenience wrapper (calls run_generate_eval_advise via subprocess)
+python3 scripts/assistant/run_full_report.py \
+  --metadata-csv datasets/CBIS_CLEAN_V2/metadata_clean.csv \
+  --filter-view MLO --filter-density dense \
+  --num-images 6 --tag-prefix my_run
+
+# Multi-run comparison table
+python3 scripts/evaluation/compare_runs.py --runs-dir outputs/eval
+
+# Ablation experiment
+python3 scripts/tests/run_ablation.py
+
+# UI wiring smoke test (no GPU needed)
+python3 scripts/tools/verify_ui_wiring.py
+```
+
+## Architecture
+
+### Pipeline layers
+
+0. **Shared core library** (`scripts/core/`): Decoupled reusable modules imported by all pipeline layers. Contains:
+   - `pipeline_config.py` — `PipelineConfig` dataclass: single source of truth for all generation parameters, bounds, and serialization. **`GenParams`** includes **`fullimage_long_side`** / **`fullimage_output_long_side`** but not **`fullimage_min_short_side`** yet; **`--fullimage-min-short-side`** (default **384**) is enforced in **`run_mammo_sd15.py`** / **`fullimage_generate()`** and written to **`run_params.json`**.
+   - `generation_pipeline.py` — `SDPipeline` class: importable SD1.5+LoRA engine (model loading + full-image or patch-overlap img2img).
+   - `postprocess_pipeline.py` — Pure numpy/OpenCV postprocess functions extracted from `postprocess_freq.py`.
+   - `label_guard.py` — Stateless image filter functions (background clean, label erasure, edge feathering) decoupled from `run_mammo_sd15.py`.
+   - `pipeline_orchestrator.py` — `GenerationPipeline` class: composes SDPipeline + LabelGuard + postprocess into a single callable interface with per-stage enable/disable.
+
+1. **Preprocessing** (`scripts/preprocessing/`): CBIS-DDSM cleaning, breast mask extraction, DICOM burn-in removal, caption generation. Produces `datasets/CBIS_CLEAN_V2/metadata_clean.csv` (current canonical training data). Also includes `clean_text_craft_lama.py` for CRAFT+LaMa text removal and `clean_labels_inpaint.py` for mask-internal label inpaint.
+
+2. **Training** (`scripts/training/`): LoRA fine-tuning on SD1.5 UNet via `peft`. Current recommended weights: `outputs/lora/mammo_sd15_v6_allMLO/final_lora` (r=32, trained on all MLO views). Backup: `outputs/lora/mammo_sd15_v4_clean/final_lora` (r=64, dense-only clean labels). `train_lora_quick.py` is the fast training script; `prepare_lora_dataset.py` builds the JSONL from metadata CSV; `prepare_lora_dataset_v5.py` targets CBIS_CLEAN_V3 with text-free captions.
+
+3. **Generation** (`scripts/generation/`): `run_mammo_sd15.py` is the **sole active** generation script. **Primary path:** `--mode full-image` (default)—single latent-space img2img via `fullimage_generate()`: scale so long side ≤ `--fullimage-long-side` (default **768**), short side ≥ `--fullimage-min-short-side` (default **384**) when feasible, hard cap 1024 px; **output then LANCZOS4-upscaled (or INTER_AREA-downscaled) to long side == `--fullimage-output-long-side`** (default **2048**; **0** = keep native). **Default LoRA: `mammo_sd15_v6_allMLO/final_lora`** (r=32). **Default generation parameters (2026-05-14):** strength=**0.5**, guidance_scale=**8.5**, num_steps=**20**, gabor_alpha=**0.55**, scheduler=dpm. **Source pool:** `filter_source_pool()` drops extreme aspect ratios (default **2.2**) and applies **shape quality pre-filter** (circularity<0.30 or convex_defect>0.45 → skip). **Post-filter sequence (legacy_label_guard=True):** `erase_background_labels` → `erase_bright_border_labels` → `feather_canvas_edge(feather_px=3)` → `inpaint_interior_bright_spots()` (TELEA inpaint of isolated small bright blobs). **Metal BB markers:** `_final_metal_sweep()` (3-round Hough+TELEA, always runs). **`_erase_text_residual_corners` does not exist in codebase** (doc artifact). **Qwen-VL POST verification is NOT wired into main generation path** (`--no-qwen-vl` is parsed but unused in `main()`). **Fallback:** `--mode patch`—Patch-Overlap img2img with blend modes (hann default, pyramid, etc.), patch 640, global guide + latent smooth. Each batch writes `source_map.json` + `run_params.json` (full parameters). When `--postprocess` is enabled, generation uses **inline `PostprocessParams`**: **`blend=0.4`**, **`sharpen_strength=0.4`**, **`fill_voids=False`**. **Bilateral filter is NOT recommended at 2048px** (destroys power spectrum, raises BRISQUE).
+
+4. **Postprocessing** (`scripts/postprocess/`): `postprocess_freq.py` is a thin CLI wrapper around `scripts/core/postprocess_pipeline.py`. Pipeline order: Winsorize → (optional) hole fill → β correction → CLAHE → Unsharp → (optional) bilateral → edge feathering. **`run_mammo_sd15.py --postprocess`** uses an **inline `PostprocessParams`**: **`blend=0.4`**, **`sharpen_strength=0.4`**, **`fill_voids=False`** (void fill trips ARTIFACT_BUBBLES). **Do NOT enable bilateral filter at full 2048px resolution** — it smooths the mammographic power spectrum and worsens BRISQUE.
+
+5. **Evaluation** (`scripts/evaluation/`): `review_generated_images.py` is the main scorer. 16-dim rule-based scores across groups A–F. **Current default thresholds (2026-05-14, relaxed to match SD1.5 capability):** min_circularity=**0.32** (was 0.45), max_contour_concavity=**0.45** (was 0.35), max_isolated_round=**6** (was 3), BRISQUE trigger=**55** (was 45), max_bright_spots=**15** (was 10). **`hard_tags`** (fatal for `ok`) include BANDING, SHAPE_ODD, ARTIFACT_BUBBLES, CONTOUR_FRACTURED, EDGE_VOIDS, GRID_SEAM, etc. **`HIGH_BRISQUE` is NOT a hard tag** — it only reduces F-group score. **`SKIN_LINE_MISSING`** and **`GRID_SEAM`** funnel into **`soft_reasons`** in full-image mode (lower semantic_score but don't directly block `ok`). Use **`--real-images-dir`** for density-matched real baselines. Outputs `summary.json` + `review_report.csv`. Current strict pass_rate (no-auto-calibrate): ~50%.
+
+6. **Assistant/reporting** (`scripts/assistant/`): `run_generate_eval_advise.py` is the primary orchestrator (generate → evaluate → advisor). When **`--mode full-image`**, both **`run_generate_eval_advise.py`** and **`run_full_report.py`** forward **`--fullimage-long-side`** / **`--fullimage-output-long-side`** (**not** **`--fullimage-min-short-side`**, which stays at **`run_mammo_sd15.py`** defaults unless you invoke that script directly with overrides). **`run_full_report.py`** is a subprocess wrapper around **`run_generate_eval_advise`**. **`tuning_state.py`** reads/writes **`LATEST_NEXT_RUN.json`** for CLI + assistant jobs. **`ask_advisor.py`** calls external LLMs (DeepSeek, GLM, or DashScope Qwen for text; Qwen‑VL for vision). API keys live in **`.env`**.
+
+7. **UI & API** (`apps/`): Gradio (`app_gradio.py`) calls scripts via `subprocess` — does NOT depend on the FastAPI server. Both are started together by `start.sh` but are logically independent. The API server (`api_server.py`) wraps the same scripts with async job queues. The **生成** tab is **a single streamlined panel**: speed preset + **全图/Patch** + filters; sampling sliders live in **`visible=False`** and are driven by presets (aligned with **`GenParams`**). Default density **`scattered`**. Full-image runs pass **`--mode full-image`** and **`--fullimage-output-long-side 2048`**. Separate **一键流水线 / 评估 / 画廊 / 调参历史** tabs remain; **`load_latest_next_run_into_tuning`** exists but is **not wired** in the simplified UI — apply advisor JSON primarily via **`run_full_report.py --from-latest-tuning`** or copy fields from **`LATEST_NEXT_RUN.json`** manually into CLI/UI.
+
+### Unit tests (`scripts/tests/`)
+
+- **`test_fullimage_output_size.py`**: asserts **`fullimage_output_long_side`** caps the saved long edge (uses a minimal fake img2img **`pipe`** that echoes the latent image).
+
+### Key state files
+
+| Path | Role |
+|------|------|
+| `datasets/CBIS_CLEAN_V2/metadata_clean.csv` | Canonical training/generation metadata (burn-in cleaned) |
+| `outputs/lora/mammo_sd15_v6_allMLO/final_lora/` | Current recommended LoRA weights (r=32, all MLO views) |
+| `outputs/reports/LATEST_NEXT_RUN.json` | Most recent advisor-suggested **`parameters`** and tuning context (`eval_mode`, **`source_seed`**, etc.). Apply with **`python3 scripts/assistant/run_full_report.py --from-latest-tuning`** (CLI); **`PARAM_HISTORY`** + **「调参历史」** Tab in Gradio support rollback reruns |
+| `outputs/reports/PARAM_HISTORY.json` | Last 5 tuning rounds with metrics |
+| `hf_cache/sd15/` | Local SD1.5 snapshot for offline inference |
+| `<batch_dir>/source_map.json` | Per-batch output→source image path mapping |
+
+### Gradio/Batch directory convention
+
+Generated images go to `outputs/generated/毕业论文_生成图像/<prefix>_<timestamp>_<seq>/`. The UI gallery only scans directories ending in `_000` within `毕业论文_生成图像/` and the top level of `generated/`. The `--output-base` flag in `run_full_report.py` explicitly targets `毕业论文_生成图像/` to keep UI-visible batches consistent.
+
+### Label guard system
+
+Label guard functions live in `scripts/core/label_guard.py` (decoupled from the generation script). `run_mammo_sd15.py` and `GenerationPipeline` both import from this shared module. The guard (`--legacy-label-guard`, enabled by default) detects and suppresses DICOM burn-in text artifacts (e.g., "R MLO") via heuristic + optional Qwen-VL verification. The training data in `CBIS_CLEAN_V2` has already been cleaned of mask-internal annotations, but the base SD1.5 model may still inject text patterns from its pre-training. **POST VL** runs for **both** patch and **full-image** when guard + key: **60 s** HTTP timeout **per image** (`_post_timeout`); there is **no longer** a skip path that disabled POST VL solely because the batch was full-image.
+
+### .env and LLM advisor
+
+Copy `.env.example` to `.env` and configure at least one text API backend. The advisor system (`scripts/assistant/ask_advisor.py`) uses this priority order when `ADVISOR_TEXT_BACKEND=auto`: DeepSeek > GLM > DashScope Qwen. Vision analysis uses Qwen-VL via DashScope. The `.env` file is git-ignored.
+
+### Archive directory
+
+`archive/` contains deprecated scripts and checkpoints. Do not modify or reference these in active development. Historical experiment conclusions are documented in `docs/开发日志.md`.
+
+## Current tuning bottleneck remediation plan
+
+This section is an execution brief for Claude Code CLI when asked to fix the current image-quality tuning bottleneck. Do not continue blind parameter search before stabilizing the evaluation loop.
+
+### Diagnosis to preserve
+
+- The main bottleneck is the feedback loop, not a single generation parameter. Recent uncalibrated evaluations fail mainly on `SHAPE_ODD`, `BANDING`, `HIGH_BRISQUE`, `CONTOUR_FRACTURED`, and `OVEREXPOSED`; auto-calibrated runs can report `pass_rate=1.0` while Qwen-VL/visual review still rejects visible seams, plastic texture, weak skin lines, and abnormal images.
+- Auto calibration currently over-relaxes some hard gates when a real baseline is passed. Observed examples: `min_banding_score` can become `0.0`, `min_circularity` about `0.097`, and `max_contour_concavity` about `1.284`. That makes pass/fail unsuitable as the only tuning target.
+- Source image selection is a confounder. `run_mammo_sd15.py` has `--source-seed None` defaulting to a timestamp; Gradio leaves **「源图种子」** blank for variation, while tuning/A-B runs should fix `--source-seed` and keep **`--source-quality-sort`** explicit.
+- Patch-overlap img2img still has a structural seam/banding risk because each patch is independently diffused and then fused. The latent smooth field reduces seed drift but does not guarantee frequency or brightness continuity across patch boundaries.
+- Postprocess can amplify weak artifacts. Frequency beta correction, CLAHE, and unsharp masking may improve contrast but can also strengthen banding, overexposure, contour roughness, or BRISQUE.
+
+### Execution order
+
+1. **Stabilize evaluation before changing generation.**
+   - In `scripts/evaluation/review_generated_images.py`, separate "diagnostic strict thresholds" from "real-baseline calibrated scoring". Calibration may adjust soft scores, but it must not silently erase hard defect tags such as `BANDING`, `SHAPE_ODD`, and `CONTOUR_FRACTURED`.
+   - Add summary fields that expose both views in one run: calibrated score/pass and strict defect tags/pass. Keep existing output keys backward compatible where possible.
+   - If changing thresholds, document the rationale in `docs/当前问题与架构说明.md`.
+
+2. **Make source selection reproducible.**
+   - In `scripts/generation/run_mammo_sd15.py` and assistant wrappers, add a standard validation path that uses a fixed `--source-seed`, writes `source_map.json`, and optionally reuses the same source list across A/B runs.
+   - Align documentation and code: either make `--source-quality-sort` truly default-on, or update docs and wrappers to pass it explicitly for tuning runs.
+   - Prefer adding a small "golden source set" or source whitelist for 4-8 representative MLO dense images before evaluating parameter changes.
+
+3. **Run controlled ablations, one variable at a time.**
+   - Baseline command should fix `--seed`, `--source-seed`, `--metadata-csv`, `--filter-view MLO`, `--filter-density dense`, `--num-images`, `--eval-profile full`, and the same source set.
+   - Compare only one of these at a time: `blend_mode`, `overlap_ratio`, `global_guide_blend`, `strength`, postprocess CLAHE/sharpen/beta settings.
+   - Record each run's command, source map, `summary.json`, and a short visual verdict. Do not accept `pass_rate` alone as success.
+
+4. **Attack the image defects in dependency order.**
+   - First reduce seams/banding: compare `hann` vs `pyramid`, and verify whether banding improves in strict tags and visual review. Do not raise overlap indefinitely if patch count becomes the bottleneck.
+   - Then control exposure: test lower postprocess CLAHE or adaptive CLAHE only after source selection is fixed. Re-check `OVEREXPOSED`, `mean_brisque`, and visual texture.
+   - Then address shape: filter or stratify sources by mask ratio/contour quality before adjusting `strength`. Shape failures caused by tiny or irregular source breasts should not be treated as a pure diffusion parameter problem.
+
+5. **Update the tuning/reporting loop.**
+   - In `scripts/assistant/run_generate_eval_advise.py` and `run_full_report.py`, make reports clearly state whether evaluation used real-baseline calibration, strict defect gates, Qwen-VL, and fixed source seed.
+   - Prevent advisor recommendations from being based on inconsistent metrics. If auto-calibrated pass is high but strict defects or visual review fail, report the run as not solved.
+   - Keep `LATEST_NEXT_RUN.json` useful, but require it to include the evaluation mode and source-seed assumptions that produced the recommendation.
+
+### Suggested validation commands
+
+```bash
+# Strict diagnostic evaluation on a fixed generated batch
+python3 scripts/evaluation/review_generated_images.py \
+  --images-dir outputs/generated/<batch_dir> \
+  --output-dir outputs/eval/<eval_name> \
+  --no-recursive --eval-profile full --enable-seam-check \
+  --no-auto-calibrate
+
+# Calibrated evaluation with a density-matched real pool (example: scattered jpeg pool)
+python3 scripts/evaluation/review_generated_images.py \
+  --images-dir outputs/generated/<batch_dir> \
+  --output-dir outputs/eval/<eval_name> \
+  --no-recursive --eval-profile full --enable-seam-check \
+  --real-images-dir datasets/jpeg
+
+# Full-image generation (default mode) with capped save resolution
+python3 scripts/generation/run_mammo_sd15.py \
+  --base-model-local hf_cache/sd15 \
+  --lora-path outputs/lora/mammo_sd15_v6_allMLO/final_lora \
+  --metadata-csv datasets/CBIS_CLEAN_V2/metadata_clean.csv \
+  --filter-view MLO --filter-density scattered \
+  --num-images 4 --seed 2026 --source-seed 20260513 \
+  --mode full-image \
+  --fullimage-min-short-side 384 \
+  --fullimage-output-long-side 2048 \
+  --scheduler dpm --num-steps 20 \
+  --strength 0.5 --guidance-scale 8.5 \
+  --gabor-alpha 0.55 \
+  --source-quality-sort --postprocess
+
+# Controlled patch-overlap generation (legacy fallback)
+python3 scripts/generation/run_mammo_sd15.py \
+  --base-model-local hf_cache/sd15 \
+  --lora-path outputs/lora/mammo_sd15_v6_allMLO/final_lora \
+  --metadata-csv datasets/CBIS_CLEAN_V2/metadata_clean.csv \
+  --filter-view MLO --filter-density dense \
+  --mode patch \
+  --num-images 4 --seed 2026 --source-seed 20260513 \
+  --source-quality-sort \
+  --scheduler dpm --num-steps 20 --patch-size 640 \
+  --overlap-ratio 0.90 --strength 0.5
+```
+
+### Done criteria
+
+- A fixed-source A/B run can be reproduced with the same `source_map.json`.
+- Reports show strict and calibrated evaluation results side by side.
+- A run is only considered improved if strict defects decrease, visual review no longer rejects obvious seams/plastic texture/skin-line failures, and BRISQUE or texture metrics do not regress materially.
+- Documentation in `docs/当前问题与架构说明.md` matches the implemented defaults and the current recommended tuning protocol.
+
+## Code quality standards
+
+- **Keep it simple** — single responsibility per module; no premature abstraction; no dead code; flat call chains (≤3 levels deep)
+- **Type hints** — annotate function signatures; use `| None` not `Optional`; prefer dataclass over raw dict
+- **Logging over print** — use `logging.getLogger(__name__)` for production paths; `print()` only in CLI entry points and debug scripts
+- **Fail fast** — validate at system boundaries (user input, file I/O, API responses); no `except: pass`; error messages must be actionable
+- **Resource cleanup** — use `with` / context managers for files, GPU memory, network connections
+- **No secrets in code or logs** — keys and tokens live in `.env` only
+- **Trust internal callers, validate external inputs** — don't re-validate your own output; do validate everything from outside
