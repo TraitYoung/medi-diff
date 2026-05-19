@@ -131,10 +131,157 @@ def _letterbox_to_target(gray: np.ndarray, target_h: int = 768,
 
 # ── Source pool ─────────────────────────────────────────────────────────────
 
+def _has_source_artifact_burden(
+    marker_score: float = 0.0,
+    bg_marker_count: int = 0,
+    bg_marker_frac: float = 0.0,
+    fg_dot_count: int = 0,
+    texture_lap_p75: float | None = None,
+    texture_grad_p75: float | None = None,
+    circumscribed_mass_count: int = 0,
+    calc_cluster_count: int = 0,
+    calc_dot_count: int = 0,
+) -> bool:
+    """Return True for source images likely to imprint visible dot artifacts."""
+    low_texture = (
+        texture_lap_p75 is not None
+        and texture_grad_p75 is not None
+        and (texture_lap_p75 < 14 or texture_grad_p75 < 14)
+    )
+    return (
+        marker_score >= 8
+        or bg_marker_count >= 20
+        or bg_marker_frac >= 0.018
+        or fg_dot_count >= 10
+        or low_texture
+        or circumscribed_mass_count > 0
+        or calc_cluster_count > 0
+        or calc_dot_count >= 6
+    )
+
+
+def _main_tissue_mask(gray: np.ndarray) -> np.ndarray:
+    """Build a coarse mask for the main breast body."""
+    if gray.ndim == 3:
+        gray = cv2.cvtColor(gray, cv2.COLOR_BGR2GRAY)
+    otsu_v, _ = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    _, bin_img = cv2.threshold(gray, max(int(otsu_v * 0.5), 8), 255, cv2.THRESH_BINARY)
+    bin_img = cv2.morphologyEx(
+        bin_img,
+        cv2.MORPH_CLOSE,
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (25, 25)),
+        iterations=2,
+    )
+    cnts, _ = cv2.findContours(bin_img, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+    mask = np.zeros_like(gray, dtype=np.uint8)
+    if cnts:
+        cv2.drawContours(mask, [max(cnts, key=cv2.contourArea)], -1, 255, -1)
+    return mask
+
+
+def _suspicious_lesion_stats(gray: np.ndarray, tissue_mask: np.ndarray) -> dict:
+    """Detect mass-like blobs and clustered calcification-like bright dots."""
+    if gray.ndim == 3:
+        gray = cv2.cvtColor(gray, cv2.COLOR_BGR2GRAY)
+    tissue = tissue_mask > 0
+    tissue_vals = gray[tissue]
+    if len(tissue_vals) < 500:
+        return {
+            "circumscribed_mass_count": 0,
+            "calc_cluster_count": 0,
+            "calc_dot_count": 0,
+        }
+
+    h, w = gray.shape[:2]
+    tissue_area = max(int(np.sum(tissue)), 1)
+    otsu_thr, _ = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
+    mass_thr = max(float(np.percentile(tissue_vals, 88.0)), float(otsu_thr) * 1.08)
+    mass_bin = ((gray >= mass_thr) & tissue).astype(np.uint8) * 255
+    mass_bin = cv2.morphologyEx(
+        mass_bin,
+        cv2.MORPH_OPEN,
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)),
+        iterations=1,
+    )
+    n_mass, labels_mass, stats_mass, _ = cv2.connectedComponentsWithStats(mass_bin, connectivity=8)
+    circumscribed_mass_count = 0
+    min_mass_area = max(120, int(tissue_area * 0.0015))
+    max_mass_area = max(min_mass_area + 1, int(tissue_area * 0.06))
+    for j in range(1, n_mass):
+        area = int(stats_mass[j, cv2.CC_STAT_AREA])
+        if area < min_mass_area or area > max_mass_area:
+            continue
+        bw = int(stats_mass[j, cv2.CC_STAT_WIDTH])
+        bh = int(stats_mass[j, cv2.CC_STAT_HEIGHT])
+        if bw < 10 or bh < 10:
+            continue
+        aspect = bw / max(float(bh), 1.0)
+        if aspect < 0.45 or aspect > 2.2:
+            continue
+        comp = (labels_mass == j).astype(np.uint8) * 255
+        contours, _ = cv2.findContours(comp, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if not contours:
+            continue
+        contour = max(contours, key=cv2.contourArea)
+        contour_area = float(cv2.contourArea(contour))
+        peri = float(cv2.arcLength(contour, True))
+        if contour_area <= 0 or peri <= 0:
+            continue
+        circularity = 4 * np.pi * contour_area / max(peri ** 2, 1.0)
+        hull_area = float(cv2.contourArea(cv2.convexHull(contour)))
+        solidity = contour_area / max(hull_area, 1.0)
+        if circularity < 0.42 or solidity < 0.82:
+            continue
+        x0 = int(stats_mass[j, cv2.CC_STAT_LEFT])
+        y0 = int(stats_mass[j, cv2.CC_STAT_TOP])
+        pad = max(8, min(32, max(bw, bh) // 2))
+        x1, y1 = max(0, x0 - pad), max(0, y0 - pad)
+        x2, y2 = min(w, x0 + bw + pad), min(h, y0 + bh + pad)
+        roi = gray[y1:y2, x1:x2]
+        comp_roi = labels_mass[y1:y2, x1:x2] == j
+        tissue_roi = tissue[y1:y2, x1:x2]
+        ring = tissue_roi & ~comp_roi
+        if np.sum(ring) < 20:
+            continue
+        contrast = float(np.median(gray[labels_mass == j])) - float(np.median(roi[ring]))
+        if contrast < 10:
+            continue
+        circumscribed_mass_count += 1
+
+    calc_thr = max(float(np.percentile(tissue_vals, 99.75)), float(otsu_thr) * 1.25)
+    calc_bin = ((gray >= calc_thr) & tissue).astype(np.uint8) * 255
+    n_calc, labels_calc, stats_calc, cent = cv2.connectedComponentsWithStats(calc_bin, connectivity=8)
+    centers = []
+    for j in range(1, n_calc):
+        area = int(stats_calc[j, cv2.CC_STAT_AREA])
+        bw = int(stats_calc[j, cv2.CC_STAT_WIDTH])
+        bh = int(stats_calc[j, cv2.CC_STAT_HEIGHT])
+        if 2 <= area <= 80 and max(bw, bh) <= 14:
+            centers.append((float(cent[j][0]), float(cent[j][1])))
+
+    calc_cluster_count = 0
+    cluster_radius = max(28.0, min(h, w) * 0.055)
+    for cx, cy in centers:
+        nearby = 0
+        for ox, oy in centers:
+            if (cx - ox) ** 2 + (cy - oy) ** 2 <= cluster_radius ** 2:
+                nearby += 1
+        if nearby >= 4:
+            calc_cluster_count += 1
+            break
+
+    return {
+        "circumscribed_mass_count": circumscribed_mass_count,
+        "calc_cluster_count": calc_cluster_count,
+        "calc_dot_count": len(centers),
+    }
+
+
 def filter_source_pool(metadata_csv: Path, filter_view: str = "",
                        filter_density: str = "", num_images: int = 8,
                        source_seed: int | None = None,
-                       source_quality_sort: bool = True,
+                       source_quality_sort: bool = False,
                        max_aspect_ratio: float = 2.2) -> list[dict]:
     """Filter metadata CSV, return list of source entries with image_path etc."""
     import pandas as pd
@@ -177,17 +324,22 @@ def filter_source_pool(metadata_csv: Path, filter_view: str = "",
 
     # Shape quality pre-filter: reject sources with badly fractured or non-oval contours
     good_entries = []
+    artifact_entries = []
     rejected = 0
+    artifact_rejected = 0
     for e in entries:
         path = e.get("image_path", "")
         if not path or not os.path.exists(path):
             good_entries.append(e)
+            if not source_quality_sort and len(good_entries) >= num_images:
+                break
             continue
         try:
             src = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
             if src is None:
                 good_entries.append(e)
                 continue
+            src = resize_long_side_gray(src, 1024)
             h, w = src.shape[:2]
             actual_aspect = max(h, w) / max(min(h, w), 1)
             if actual_aspect > max_aspect_ratio:
@@ -251,7 +403,15 @@ def filter_source_pool(metadata_csv: Path, filter_view: str = "",
 
             tissue_vals = src[tissue_mask > 0]
             fg_dot_count = 0
+            texture_lap_p75 = None
+            texture_grad_p75 = None
             if len(tissue_vals) > 500:
+                lap = cv2.Laplacian(src, cv2.CV_32F, ksize=3)
+                texture_lap_p75 = float(np.percentile(np.abs(lap)[tissue_mask > 0], 75))
+                sobx = cv2.Sobel(src, cv2.CV_32F, 1, 0, ksize=3)
+                soby = cv2.Sobel(src, cv2.CV_32F, 0, 1, ksize=3)
+                grad = np.sqrt(sobx * sobx + soby * soby)
+                texture_grad_p75 = float(np.percentile(grad[tissue_mask > 0], 75))
                 fg_thr = max(float(np.percentile(tissue_vals, 99.85)), bright_thr)
                 fg_bright = ((src >= fg_thr) & (tissue_mask > 0)).astype(np.uint8) * 255
                 n_fg, _, stats_fg, _ = cv2.connectedComponentsWithStats(fg_bright, connectivity=8)
@@ -261,8 +421,13 @@ def filter_source_pool(metadata_csv: Path, filter_view: str = "",
                     bh = int(stats_fg[j, cv2.CC_STAT_HEIGHT])
                     if 3 <= a <= 90 and max(bw, bh) <= 14:
                         fg_dot_count += 1
+            lesion_stats = _suspicious_lesion_stats(src, tissue_mask)
             fg_dot_penalty = max(0, fg_dot_count - 3) * 0.06
             e = dict(e)
+            try:
+                marker_score = float(e.get("marker_score", 0) or 0)
+            except Exception:
+                marker_score = 0.0
             e["_source_quality_score"] = (
                 area_frac * 1.2
                 + circ * 0.35
@@ -271,19 +436,56 @@ def filter_source_pool(metadata_csv: Path, filter_view: str = "",
                 - bg_marker_penalty
                 - fg_dot_penalty
             )
+            e["_source_artifact_stats"] = {
+                "marker_score": marker_score,
+                "bg_marker_count": bg_marker_count,
+                "bg_marker_frac": bg_marker_frac,
+                "fg_dot_count": fg_dot_count,
+                "texture_lap_p75": texture_lap_p75,
+                "texture_grad_p75": texture_grad_p75,
+                **lesion_stats,
+            }
+            if _has_source_artifact_burden(
+                marker_score=marker_score,
+                bg_marker_count=bg_marker_count,
+                bg_marker_frac=bg_marker_frac,
+                fg_dot_count=fg_dot_count,
+                texture_lap_p75=texture_lap_p75,
+                texture_grad_p75=texture_grad_p75,
+                circumscribed_mass_count=int(lesion_stats["circumscribed_mass_count"]),
+                calc_cluster_count=int(lesion_stats["calc_cluster_count"]),
+                calc_dot_count=int(lesion_stats["calc_dot_count"]),
+            ):
+                artifact_rejected += 1
+                artifact_entries.append(e)
+                continue
             good_entries.append(e)
+            if not source_quality_sort and len(good_entries) >= num_images:
+                break
         except Exception:
             good_entries.append(e)
+            if not source_quality_sort and len(good_entries) >= num_images:
+                break
 
     if rejected > 0:
         logger.debug("Shape filter: rejected %d/%d sources (bad aspect/area/shape)",
                      rejected, len(entries))
+    if artifact_rejected > 0:
+        logger.info("Artifact filter: skipped %d/%d source candidates",
+                    artifact_rejected, len(entries))
 
     if source_quality_sort:
         good_entries.sort(
             key=lambda e: float(e.get("_source_quality_score", 0.0)),
             reverse=True,
         )
+
+    if len(good_entries) < num_images and artifact_entries:
+        logger.warning(
+            "Artifact filter left only %d clean sources; using %d fallback sources",
+            len(good_entries), min(len(artifact_entries), num_images - len(good_entries)),
+        )
+        good_entries.extend(artifact_entries[: num_images - len(good_entries)])
 
     return good_entries[:num_images]
 
@@ -635,7 +837,7 @@ def _soften_isolated_bright_spots(gray: np.ndarray) -> np.ndarray:
             continue
         fill = float(np.percentile(context, 65))
         alpha = cv2.GaussianBlur(component.astype(np.float32), (0, 0), sigmaX=1.6)
-        alpha = np.clip(alpha * 0.85, 0, 0.85)
+        alpha = np.clip(alpha * 0.93, 0, 0.93)
         result[y1:y2, x1:x2] = (
             roi.astype(np.float32) * (1 - alpha)
             + fill * alpha
@@ -665,8 +867,6 @@ def main() -> None:
     from scripts.core.label_guard import (
         erase_background_labels, erase_bright_border_labels,
         clean_background, feather_canvas_edge)
-    from scripts.core.postprocess_pipeline import run_postprocess_on_image
-
     p = argparse.ArgumentParser(
         description="SD1.5+LoRA mammography image generation",
         formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -725,7 +925,7 @@ def main() -> None:
     g.add_argument("--num-images", type=int, default=6)
     g.add_argument("--seed", type=int, default=2026)
     g.add_argument("--source-seed", type=int, default=None)
-    g.add_argument("--source-quality-sort", action="store_true", default=True)
+    g.add_argument("--source-quality-sort", action="store_true", default=False)
     g.add_argument("--no-source-quality-sort", action="store_false",
                    dest="source_quality_sort")
     g.add_argument("--max-source-aspect-ratio", type=float, default=2.2)
@@ -735,10 +935,7 @@ def main() -> None:
     g.add_argument("--output-base", type=str, default="outputs/generated")
     g.add_argument("--output-subdir-prefix", type=str, default="sd15")
 
-    # Postprocess
-    g = p.add_argument_group("Postprocess")
-    g.add_argument("--postprocess", action="store_true", default=True)
-    g.add_argument("--no-postprocess", action="store_false", dest="postprocess")
+    # Postprocess archived — see archive/postprocess/postprocess_freq.py
 
     # Label guard
     g = p.add_argument_group("Label Guard")
@@ -763,12 +960,14 @@ def main() -> None:
     metadata_csv = _resolve(args.metadata_csv)
     output_base = _resolve(args.output_base)
 
+    t_pipeline_start = time.time()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logger.info("Device: %s  Mode: %s", device, args.mode)
 
     # Load model
     from diffusers import StableDiffusionImg2ImgPipeline, DPMSolverMultistepScheduler, DDIMScheduler
 
+    t0 = time.time()
     logger.info("Loading SD1.5 img2img pipeline...")
     pipe = StableDiffusionImg2ImgPipeline.from_pretrained(
         str(base_model_local) if base_model_local else args.base_model,
@@ -794,15 +993,20 @@ def main() -> None:
     else:
         logger.warning("LoRA path not found: %s", lora_path)
 
+    logger.info("Model+LoRA loaded in %.1fs", time.time() - t0)
+
     # Source pool
+    t0 = time.time()
     if metadata_csv.is_file():
+        source_pool_size = max(args.num_images, args.num_images * 4)
         sources = filter_source_pool(
             metadata_csv=metadata_csv, filter_view=args.filter_view,
-            filter_density=args.filter_density, num_images=args.num_images,
+            filter_density=args.filter_density, num_images=source_pool_size,
             source_seed=args.source_seed,
             source_quality_sort=args.source_quality_sort,
             max_aspect_ratio=args.max_source_aspect_ratio)
-        logger.info("Selected %d sources", len(sources))
+        logger.info("Selected %d candidate sources for %d requested images (%.1fs)",
+                    len(sources), args.num_images, time.time() - t0)
     else:
         logger.warning("Metadata not found: %s. Using test patterns.", metadata_csv)
         sources = [{"image_path": ""} for _ in range(args.num_images)]
@@ -834,9 +1038,6 @@ def main() -> None:
         "num_steps": args.num_steps,
         "scheduler": args.scheduler,
         "gabor_alpha": args.gabor_alpha,
-        "sharpen_strength": 0.32,
-        "postprocess_freq": args.postprocess,
-        "postprocess_edge_feather": True,
         "legacy_label_guard": args.legacy_label_guard,
         "bg_clean": args.bg_clean,
         "canvas_edge_feather": 3,
@@ -853,8 +1054,12 @@ def main() -> None:
 
     source_map: dict[str, str] = {}
 
-    logger.info("Generating %d images...", len(sources))
+    logger.info("Generating %d images from %d candidates...", args.num_images, len(sources))
+    saved_count = 0
+    lesion_skip_count = 0
     for idx, src_entry in enumerate(tqdm(sources)):
+        if saved_count >= args.num_images:
+            break
         src_path = src_entry.get("image_path", "")
         if src_path and os.path.exists(src_path):
             src_gray = load_source_gray(src_path)
@@ -883,7 +1088,7 @@ def main() -> None:
                 num_inference_steps=args.num_steps, generator=gen,
                 fullimage_long_side=args.fullimage_long_side,
                 fullimage_min_short_side=args.fullimage_min_short_side,
-                fullimage_output_long_side=args.fullimage_output_long_side)
+                fullimage_output_long_side=0)  # upscale deferred to after post-processing
         else:
             global_guide_gray = None
             if args.global_guide:
@@ -924,25 +1129,45 @@ def main() -> None:
         result = _final_metal_sweep(result)
         result = _inpaint_background_bright_markers(result)
 
-        if args.postprocess:
-            from scripts.core.pipeline_config import PostprocessParams
-            pp = PostprocessParams(enabled=True, blend=0.4, fill_voids=False,
-                                   sharpen_strength=0.32,
-                                   edge_feather=True,
-                                   feather_ksize=3)
-            result = run_postprocess_on_image(result, pp)
-            result = _soften_isolated_bright_spots(result)
-            result = _final_metal_sweep(result)
-            result = _inpaint_background_bright_markers(result)
+        # Postprocess hook removed (2026-05-18) — see archive/postprocess/
+        # Recover by importing PostprocessParams + run_postprocess_on_image
 
-        out_name = f"sd15_{idx:04d}.png"
+        # Lesion check runs at native SD resolution (calibrated thresholds)
+        lesion_stats = _suspicious_lesion_stats(result, _main_tissue_mask(result))
+        if (
+            int(lesion_stats["circumscribed_mass_count"]) > 0
+            or int(lesion_stats["calc_cluster_count"]) > 0
+            or int(lesion_stats["calc_dot_count"]) >= 4
+        ):
+            lesion_skip_count += 1
+            logger.warning(
+                "Skip candidate %d due to suspicious lesion-like pattern: %s",
+                idx, lesion_stats,
+            )
+            continue
+
+        # Upscale after cleanup and lesion check so all processing runs at native SD resolution
+        if args.mode == "full-image" and args.fullimage_output_long_side > 0:
+            result = resize_long_side_gray(result, args.fullimage_output_long_side)
+
+        out_name = f"sd15_{saved_count:04d}.png"
         Image.fromarray(result).save(out_dir / out_name)
         source_map[out_name] = src_path if src_path else f"pattern_{idx}"
+        saved_count += 1
+
+    if saved_count < args.num_images:
+        logger.warning(
+            "Generated only %d/%d images after lesion filtering; skipped %d candidates",
+            saved_count, args.num_images, lesion_skip_count,
+        )
 
     with open(out_dir / "source_map.json", "w", encoding="utf-8") as f:
         json.dump(source_map, f, indent=2, ensure_ascii=False)
 
-    logger.info("Done. %d images → %s", len(source_map), out_dir)
+    elapsed_total = time.time() - t_pipeline_start
+    logger.info("Done. %d images → %s | total %.1fs (%.1fs/img)",
+                len(source_map), out_dir, elapsed_total,
+                elapsed_total / max(len(source_map), 1))
 
 
 if __name__ == "__main__":

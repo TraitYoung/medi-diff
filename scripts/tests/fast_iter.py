@@ -9,7 +9,7 @@
   python3 scripts/tests/fast_iter.py --with-vl                 # 附加视觉顾问看图
 
 快速参数（可在命令行覆盖）：
-  --overlap-ratio 0.50  --num-steps 8  --no-postprocess  --no-global-guide
+  --overlap-ratio 0.50  --num-steps 8  --no-global-guide
 """
 
 from __future__ import annotations
@@ -61,7 +61,6 @@ def generate(params: dict) -> Path | None:
         "--output-subdir-prefix", tag,
         "--no-global-guide",
         "--no-legacy-label-guard",
-        "--no-postprocess",
         "--no-input-clahe",
     ]
     r = run(gen_cmd, timeout=600)

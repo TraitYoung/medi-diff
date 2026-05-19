@@ -56,24 +56,23 @@ def main() -> None:
     # Model
     p.add_argument("--base-model-local", type=str, default="hf_cache/sd15")
     p.add_argument("--lora-path", type=str,
-                   default="outputs/lora/mammo_sd15_v4_clean/final_lora")
+                   default="outputs/lora/mammo_sd15_v6_allMLO/final_lora")
 
     # Generation
     p.add_argument("--mode", type=str, default="full-image",
-                   choices=["full-image", "patch"])
+                   choices=["full-image"])
     p.add_argument("--seed", type=int, default=2026)
     p.add_argument("--source-seed", type=int, default=None)
-    p.add_argument("--strength", type=float, default=0.42)
-    p.add_argument("--guidance-scale", type=float, default=7.9)
+    p.add_argument("--strength", type=float, default=0.44)
+    p.add_argument("--guidance-scale", type=float, default=7.5)
     p.add_argument("--num-steps", type=int, default=40)
-    p.add_argument("--overlap-ratio", type=float, default=0.85)
+    # --overlap-ratio removed (full-image only)
     p.add_argument("--scheduler", type=str, default="dpm")
     p.add_argument("--fullimage-long-side", type=int, default=768)
     p.add_argument("--fullimage-output-long-side", type=int, default=2048)
-    p.add_argument("--postprocess", action="store_true", default=False)
-    p.add_argument("--no-postprocess", action="store_false", dest="postprocess")
+    # Postprocess flags archived — see archive/postprocess/
     p.add_argument("--bg-clean", action="store_true", default=False)
-    p.add_argument("--source-quality-sort", action="store_true", default=True)
+    p.add_argument("--source-quality-sort", action="store_true", default=False)
     p.add_argument("--no-source-quality-sort", action="store_false",
                    dest="source_quality_sort")
 
@@ -113,7 +112,6 @@ def main() -> None:
             "--num-steps", str(args.num_steps),
             "--strength", str(args.strength),
             "--guidance-scale", str(args.guidance_scale),
-            "--overlap-ratio", str(args.overlap_ratio),
             "--scheduler", args.scheduler,
             "--mode", args.mode,
             "--fullimage-long-side", str(args.fullimage_long_side),
@@ -123,14 +121,9 @@ def main() -> None:
         ]
         if args.source_seed is not None:
             gen_cmd.extend(["--source-seed", str(args.source_seed)])
-        if args.postprocess:
-            gen_cmd.append("--postprocess")
         if args.bg_clean:
             gen_cmd.append("--bg-clean")
-        if args.source_quality_sort:
-            gen_cmd.append("--source-quality-sort")
-        else:
-            gen_cmd.append("--no-source-quality-sort")
+        # Postprocess and source-quality-sort flags archived
 
         t0 = time.time()
         r = _run(gen_cmd, "GENERATE")
@@ -196,6 +189,7 @@ def main() -> None:
                 prompt_lines = [
                     "你是乳腺钼靶图像质量评估专家。以下是生成图像的评估结果，请给出调参建议。",
                     "",
+                    f"生成模式: {args.mode}",
                     f"评估名称: {eval_name}",
                     f"通过率 (calibrated): {summary.get('pass_rate')}",
                     f"严格通过率 (strict): {summary.get('strict_pass_rate')}",
@@ -208,7 +202,10 @@ def main() -> None:
                     for k, v in sorted(violations.items(), key=lambda x: -x[1]):
                         prompt_lines.append(f"  - {k}: {v*100:.1f}%")
                 prompt_lines.append("")
-                prompt_lines.append("请给出具体的参数调整建议（strength, overlap_ratio, guidance_scale 等），")
+                if args.mode == 'full-image':
+                    prompt_lines.append("请给出具体的参数调整建议（strength, guidance_scale, num_steps 等），")
+                else:
+                    prompt_lines.append("请给出具体的参数调整建议（strength, overlap_ratio, guidance_scale 等），")
                 prompt_lines.append("以 JSON 格式输出 parameters 字段，并附中文解释。")
 
                 advisor_prompt = "\n".join(prompt_lines)

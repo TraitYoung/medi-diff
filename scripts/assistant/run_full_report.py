@@ -36,17 +36,20 @@ def main() -> None:
     # Forwarded args (used as defaults when not --from-latest-tuning)
     p.add_argument("--metadata-csv", type=str,
                    default="datasets/CBIS_CLEAN_V2/metadata_clean.csv")
+    p.add_argument("--base-model-local", type=str, default="hf_cache/sd15")
+    p.add_argument("--lora-path", type=str,
+                   default="outputs/lora/mammo_sd15_v6_allMLO/final_lora")
     p.add_argument("--filter-view", type=str, default="MLO")
     p.add_argument("--filter-density", type=str, default="dense")
     p.add_argument("--num-images", type=int, default=6)
     p.add_argument("--mode", type=str, default="full-image")
     p.add_argument("--seed", type=int, default=2026)
-    p.add_argument("--strength", type=float, default=0.42)
-    p.add_argument("--guidance-scale", type=float, default=7.9)
+    p.add_argument("--strength", type=float, default=0.44)
+    p.add_argument("--guidance-scale", type=float, default=7.5)
     p.add_argument("--num-steps", type=int, default=40)
-    p.add_argument("--overlap-ratio", type=float, default=0.85)
+    # --overlap-ratio removed (full-image only)
     p.add_argument("--fullimage-output-long-side", type=int, default=2048)
-    p.add_argument("--postprocess", action="store_true", default=False)
+    # Postprocess and source-quality-sort flags archived
     p.add_argument("--eval-profile", type=str, default="full")
     p.add_argument("--real-images-dir", type=str, default="")
     p.add_argument("--output-base", type=str,
@@ -70,25 +73,31 @@ def main() -> None:
 
         cmd.extend([
             "--tag-prefix", args.tag_prefix,
+            "--base-model-local", args.base_model_local,
+            "--lora-path", args.lora_path,
+            "--metadata-csv", args.metadata_csv,
             "--num-images", str(args.num_images),
             "--mode", args.mode,
+            "--filter-view", args.filter_view,
+            "--filter-density", args.filter_density,
             "--eval-profile", args.eval_profile,
             "--output-base", args.output_base,
         ])
         # Apply parameter overrides from JSON
-        for key in ("strength", "guidance_scale", "num_steps", "overlap_ratio",
+        for key in ("strength", "guidance_scale", "num_steps",
                      "seed", "fullimage_output_long_side"):
             if key in params:
                 k = key.replace("_", "-")
                 cmd.extend([f"--{k}", str(params[key])])
-        if params.get("postprocess"):
-            cmd.append("--postprocess")
+        # Postprocess and source-quality-sort flags archived
         if args.real_images_dir:
             cmd.extend(["--real-images-dir", args.real_images_dir])
     else:
         # Forward all known args
         cmd.extend([
             "--tag-prefix", args.tag_prefix,
+            "--base-model-local", args.base_model_local,
+            "--lora-path", args.lora_path,
             "--metadata-csv", args.metadata_csv,
             "--filter-view", args.filter_view,
             "--filter-density", args.filter_density,
@@ -98,13 +107,11 @@ def main() -> None:
             "--strength", str(args.strength),
             "--guidance-scale", str(args.guidance_scale),
             "--num-steps", str(args.num_steps),
-            "--overlap-ratio", str(args.overlap_ratio),
             "--fullimage-output-long-side", str(args.fullimage_output_long_side),
             "--eval-profile", args.eval_profile,
             "--output-base", args.output_base,
         ])
-        if args.postprocess:
-            cmd.append("--postprocess")
+        # Postprocess and source-quality-sort flags archived
         if args.real_images_dir:
             cmd.extend(["--real-images-dir", args.real_images_dir])
 

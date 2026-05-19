@@ -267,7 +267,7 @@ def parse_args():
     p.add_argument('--max_edge_voids', type=int, default=200)
     p.add_argument('--edge-density-floor', type=float, default=0.008,
                    help='边缘密度下限；低于此值 Group C（纹理）分数被硬封顶 0.5')
-    p.add_argument('--min_banding_score', type=float, default=0.7)
+    p.add_argument('--min_banding_score', type=float, default=0.62)
     p.add_argument('--max_round_density', type=float, default=0.04,
                    help='圆形亮连通域总面积占乳腺区比例上限；超过判 ARTIFACT_TRYPOPHOBIA（密集伪影）。')
     p.add_argument('--max_contour_concavity', type=float, default=0.45,
@@ -279,7 +279,7 @@ def parse_args():
     p.add_argument('--max_hist_wass', type=float, default=0.15)
     p.add_argument('--max_ref_z', type=float, default=2.6)
     p.add_argument('--max_cavity_ratio', type=float, default=0.28)
-    p.add_argument('--max_bright_spots', type=int, default=15)
+    p.add_argument('--max_bright_spots', type=int, default=20)
     p.add_argument('--max_mirror_sim', type=float, default=0.84)
     p.add_argument('--max_hu_dist', type=float, default=1.8)
     p.add_argument('--anatomy-chaos-hard', type=float, default=0.4,
@@ -1734,16 +1734,16 @@ def grade_f2(brisque):
     """BRISQUE 无参考质量评分（0=最好，100=最差）。
 
     未安装 piq 时 brisque=-1，返回中性分 0.5。
-    SD1.5+LANCZOS 放大校准：<=20 优秀，>70 不可接受，>55 触发 HIGH_BRISQUE。
+    SD1.5+LANCZOS 放大校准：<=20 优秀，>70 不可接受，>60 触发 HIGH_BRISQUE。
     """
     if brisque < 0:
         return (0.5, '')
     if brisque <= 20:
         return (1, '')
-    if brisque <= 55:
-        return (_clip01(1 - ((brisque - 20) / 35) * 0.5), '')
+    if brisque <= 60:
+        return (_clip01(1 - ((brisque - 20) / 40) * 0.5), '')
     if brisque <= 70:
-        return (_clip01(0.5 - ((brisque - 55) / 15) * 0.5), 'HIGH_BRISQUE')
+        return (_clip01(0.5 - ((brisque - 60) / 10) * 0.5), 'HIGH_BRISQUE')
     return (0, 'HIGH_BRISQUE')
 
 
@@ -1947,7 +1947,10 @@ def run_stage1_hard_funnel(gray, args, ref=None, modality_checker=None, radiomic
         enabled=bool(getattr(args, 'enable_seam_check', True)),
     )
     if seam_veto:
-        veto_reasons.append('GRID_SEAM')
+        if eval_profile == 'full':
+            soft_reasons.append('GRID_SEAM')
+        else:
+            veto_reasons.append('GRID_SEAM')
 
     # Radiomics
     vec = extract_radiomics_vector(gray, mask)

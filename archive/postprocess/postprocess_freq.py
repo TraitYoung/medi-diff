@@ -46,7 +46,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--void-circularity", type=float, default=0.55, help="最低圆度阈值（越高越严格）")
     # 频域校正
     p.add_argument("--target-beta", type=float, default=2.8)
-    p.add_argument("--blend", type=float, default=0.8,
+    p.add_argument("--blend", type=float, default=0.25,
                    help="频域滤波结果与原图混合比（1.0=纯滤波）")
     p.add_argument("--no-freq", action="store_true", help="跳过频域校正")
     # CLAHE
@@ -58,7 +58,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--feather-ksize", type=int, default=5, help="羽化核大小（奇数）")
     # Unsharp masking 锐化
     p.add_argument("--sharpen", action="store_true", help="Unsharp-mask 锐化，增强组织纹理细节")
-    p.add_argument("--sharpen-strength", type=float, default=0.3, help="锐化强度（0-1，越大越锐）")
+    p.add_argument("--sharpen-strength", type=float, default=0.15, help="锐化强度（0-1，越大越锐）")
     p.add_argument("--sharpen-radius", type=int, default=3, help="Unsharp Gaussian 模糊核半径")
     p.add_argument("--bilateral", action="store_true", help="边缘感知平滑，保留解剖边缘同时抑制纹理噪点")
     p.add_argument("--bilateral-d", type=int, default=5, help="Bilateral 滤波直径")

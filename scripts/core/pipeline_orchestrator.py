@@ -32,7 +32,6 @@ from PIL import Image
 from scripts.core.generation_pipeline import SDPipeline
 from scripts.core.label_guard import clean_background, erase_background_labels, erase_bright_border_labels, feather_canvas_edge
 from scripts.core.pipeline_config import PipelineConfig
-from scripts.core.postprocess_pipeline import run_postprocess_on_dir, run_postprocess_on_image
 
 class GenerationPipeline:
     '''Composable mammography generation pipeline.
@@ -146,6 +145,7 @@ class GenerationPipeline:
         result = self._run_sd(src, prompt, negative_prompt)
         result = self._post_filter(result)
         if self.config.postprocess.enabled:
+            from archive.core.postprocess_pipeline import run_postprocess_on_image
             result = run_postprocess_on_image(result, self.config.postprocess)
         return result
 
@@ -177,12 +177,14 @@ class GenerationPipeline:
 
     
     def apply_postprocess(self, input_dir = None, output_dir = None):
-        '''Apply postprocessing to an existing image directory. No GPU needed.'''
+        '''Apply postprocessing to an existing image directory. No GPU needed. (archived hook)'''
+        from archive.core.postprocess_pipeline import run_postprocess_on_dir
         run_postprocess_on_dir(input_dir, output_dir, self.config.postprocess)
 
     
     def apply_postprocess_image(self, gray = None):
-        '''Apply postprocessing to a single image array. No GPU needed.'''
+        '''Apply postprocessing to a single image array. No GPU needed. (archived hook)'''
+        from archive.core.postprocess_pipeline import run_postprocess_on_image
         return run_postprocess_on_image(gray, self.config.postprocess)
 
     

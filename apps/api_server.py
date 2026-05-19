@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import json
+import logging
+import os
 import subprocess
 import sys
 import threading
@@ -12,11 +14,13 @@ import uuid
 from pathlib import Path
 from typing import Literal
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+logger = logging.getLogger(__name__)
+_START_TIME = time.time()
 
 ROOT = Path(__file__).resolve().parents[1]
 GENERATED_DIR   = ROOT / "outputs/generated"
@@ -156,6 +160,7 @@ def _run_job(job_id: str) -> None:
         job.started_at = time.time()
         command = list(job.command)
 
+    logger.info("Job %s started: %s", job_id, " ".join(command[:6]))
     proc = subprocess.run(command, cwd=ROOT, text=True, capture_output=True, check=False)
 
     with jobs_lock:
@@ -167,6 +172,9 @@ def _run_job(job_id: str) -> None:
         if job.started_at is not None:
             job.elapsed_seconds = round(job.finished_at - job.started_at, 1)
         job.status = "succeeded" if proc.returncode == 0 else "failed"
+        logger.info("Job %s %s in %.1fs (rc=%d)",
+                    job_id, job.status, job.elapsed_seconds or 0,
+                    proc.returncode)
 
 
 def _load_json(path: Path) -> dict:
@@ -253,9 +261,46 @@ def _review_summaries(limit: int = 30) -> list[dict]:
 
 @app.get("/health", summary="健康检查")
 def health() -> dict:
+    gpu_info = {}
+    try:
+        import torch
+        gpu_info["cuda_available"] = torch.cuda.is_available()
+        if torch.cuda.is_available():
+            gpu_info["cuda_device_count"] = torch.cuda.device_count()
+            gpu_info["cuda_device_name"] = torch.cuda.get_device_name(0)
+            gpu_info["cuda_memory_allocated_gb"] = round(
+                torch.cuda.memory_allocated(0) / 1024**3, 2)
+            gpu_info["cuda_memory_reserved_gb"] = round(
+                torch.cuda.memory_reserved(0) / 1024**3, 2)
+    except Exception:
+        gpu_info["cuda_available"] = False
+        gpu_info["error"] = "torch not available"
+
+    mem_info = {}
+    try:
+        import psutil
+        proc = psutil.Process(os.getpid())
+        mem_info["rss_mb"] = round(proc.memory_info().rss / 1024**2, 1)
+        mem_info["vms_mb"] = round(proc.memory_info().vms / 1024**2, 1)
+        mem_info["cpu_percent"] = proc.cpu_percent(interval=0.1)
+    except Exception:
+        mem_info["error"] = "psutil not available"
+        try:
+            with open(f"/proc/{os.getpid()}/status") as f:
+                for line in f:
+                    if line.startswith("VmRSS:"):
+                        mem_info["rss_mb"] = round(
+                            int(line.split()[1]) / 1024, 1)
+                        break
+        except Exception:
+            pass
+
     return {
         "ok": True,
+        "uptime_seconds": round(time.time() - _START_TIME, 1),
         "root": str(ROOT),
+        "gpu": gpu_info,
+        "memory": mem_info,
         "sd15_model_exists": DEFAULT_MODEL.exists(),
         "sd15_lora_exists": DEFAULT_LORA.exists(),
         "sdxl_model_exists": SDXL_MODEL.exists(),
@@ -264,6 +309,16 @@ def health() -> dict:
         "generated_dir_exists": GENERATED_DIR.exists(),
         "eval_dir_exists": EVAL_DIR.exists(),
     }
+
+
+@app.middleware("http")
+async def _log_requests(request: Request, call_next):
+    t0 = time.time()
+    response = await call_next(request)
+    dt = time.time() - t0
+    logger.info("%s %s → %s %.3fs", request.method,
+                request.url.path, response.status_code, dt)
+    return response
 
 
 @app.get("/results", summary="查询所有生成批次与评估汇总")
@@ -372,26 +427,14 @@ def generate_sd15(req: GenerateSD15Request) -> JobRecord:
           deprecated=True)
 @app.post("/generate/sdxl", summary="提交 SDXL Inpaint 生成任务（归档路线，异步）")
 def generate_sdxl(req: GenerateRequest) -> JobRecord:
-    """SDXL Inpaint 归档路线，保留用于复现历史实验。主线请使用 /generate/sd15。"""
-    base_model = _resolve_under_root(req.base_model, must_exist=False)
-    command = [
-        sys.executable, "scripts/generation/run_mammo_inpaint.py",
-        "--base-model", str(base_model),
-        "--num-images", str(req.num_images),
-        "--seed", str(req.seed),
-        "--steps", str(req.steps),
-        "--strength", str(req.strength),
-        "--guidance-scale", str(req.guidance_scale),
-        "--output-subdir-prefix", req.output_subdir_prefix,
-    ]
-    if req.local_files_only:
-        command.append("--local-files-only")
-    if req.lora_path.strip():
-        lora_abs = _resolve_under_root(req.lora_path, must_exist=True)
-        command.extend(["--lora-path", str(lora_abs), "--lora-scale", str(req.lora_scale)])
-    if req.negative_prompt.strip():
-        command.extend(["--negative-prompt", req.negative_prompt.strip()])
-    return _start_job("generate", command)
+    """SDXL Inpaint 路线已归档。主线请使用 /generate/sd15。"""
+    job_id = f"archived-{uuid.uuid4().hex[:12]}"
+    return JobRecord(
+        job_id=job_id,
+        status="completed",
+        message="SDXL Inpaint 路线已归档，脚本已移除。请使用 POST /generate/sd15。",
+        created_at=datetime.now().isoformat(),
+    )
 
 
 @app.post("/review", summary="提交评估任务（异步）")

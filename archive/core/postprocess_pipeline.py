@@ -115,8 +115,14 @@ def estimate_beta(radii: np.ndarray, ps: np.ndarray) -> float:
 
 
 def correct_beta(gray: np.ndarray, beta_tgt: float, blend: float) -> np.ndarray:
-    """Frequency-domain beta-slope correction."""
+    """Frequency-domain beta-slope correction.
+
+    A mild Gaussian pre-blur suppresses high-frequency noise before FFT,
+    preventing isolated speckle amplification in the output.
+    """
     f64 = gray.astype(np.float64)
+    # Pre-blur to suppress high-frequency noise before FFT filtering
+    denoised = cv2.GaussianBlur(f64, (0, 0), sigmaX=1.0)
     radii, ps = radial_power_spectrum(f64.astype(np.float32))
     beta_src = estimate_beta(radii, ps)
     print(f"    β: {beta_src:.3f} → {beta_tgt:.3f}  (Δ={beta_src - beta_tgt:+.3f})")
@@ -128,10 +134,10 @@ def correct_beta(gray: np.ndarray, beta_tgt: float, blend: float) -> np.ndarray:
     r[cy, cx] = 1.0
     exponent = (beta_src - beta_tgt) / 2.0
     H = r ** exponent
-    H = np.clip(H, None, 3.0)
+    H = np.clip(H, None, 1.5)
     H[cy, cx] = 1.0
 
-    fft_shift = np.fft.fftshift(np.fft.fft2(f64))
+    fft_shift = np.fft.fftshift(np.fft.fft2(denoised))
     corrected = np.real(np.fft.ifft2(np.fft.ifftshift(fft_shift * H)))
 
     c_min, c_max = corrected.min(), corrected.max()

@@ -12,8 +12,10 @@
 | [系统简介](#系统简介) | 能力与模块总览 |
 | [快速开始](#快速开始) | 环境、可选 NLP API、流水线、界面与 API |
 | [目录结构](#目录结构) | 仓库文件树导读 |
+| [监控与日志](#监控与日志) | 健康检查、步骤耗时、日志位置 |
 | [主要参数说明](#主要参数说明) | 生成侧推荐区间 |
 | [评审指标说明](#评审指标说明) | 违规类型与分组 |
+| [容错设计](#容错设计) | 边界情况处理、异常降级策略 |
 | [归档路线说明](#归档路线说明) | 历史实验脚本 |
 | [论文展示建议](#论文展示建议) | 定稿展示流程 |
 
@@ -21,15 +23,16 @@
 
 | 文件 | 说明 |
 |------|------|
-| [用户操作手册](docs/用户操作手册.md) | 安装、界面、FAQ |
+| [用户操作手册](docs/developer/用户操作手册.md) | 安装、界面、FAQ |
 | [apps 入口说明](apps/README.md) | `start.sh`、Gradio vs FastAPI、`--output-base` 约定 |
 | [评价体系说明](docs/评价体系说明.md) | **双轨指标**：域内规则体系与 FID/PRC/sFID 等通用指标的分工 |
-| [API 接口文档](docs/API接口文档.md) | REST、`JobRecord`、`curl` 示例 |
-| [项目结构与目录职责](docs/项目结构说明_交接版.md) | 路径职责、归档与迁移记录 |
-| [开发日志](docs/开发日志.md) | 按日期的工程与实验纪要 |
-| [项目交付检查清单](docs/项目交付检查清单.md) | 任务书与交付核对 |
-| [评估标准说明（分项公式）](docs/评估标准说明_交接版.md) | 16 维分项与校准 |
-| [模拟专家评分表](docs/模拟专家评分表.md) | 主观评分模板 |
+| [API 接口文档](docs/developer/API接口文档.md) | REST、`JobRecord`、`curl` 示例 |
+| [项目结构与目录职责](docs/developer/项目结构说明.md) | 路径职责、归档与迁移记录 |
+| [开发日志](docs/developer/开发日志.md) | 按日期的工程与实验纪要 |
+| [项目交付检查清单](docs/developer/项目交付检查清单.md) | 任务书与交付核对 |
+| [评估标准说明（分项公式）](docs/评估标准说明.md) | 16 维分项与校准 |
+| [模拟专家评分表](docs/developer/模拟专家评分表.md) | 主观评分模板 |
+| [容错设计](docs/developer/容错设计.md) | **工程可靠性**：边界情况处理、异常降级策略、Pydantic 校验拦截 |
 | [开发者自用备忘](docs/developer/README.md) | **个人维护**：协作心法、指标体系怎么记、常见坑（非答辩口径） |
 
 ---
@@ -51,15 +54,12 @@
 
 ### 主线数据、权重与推理默认
 
-- **训练数据集来源**：[`sposso/CBIS-DDSM-DATASET`](https://github.com/sposso/CBIS-DDSM-DATASET)；本项目在此基础上进行 JPEG 筛选、标签清洗、mask 提取与 `CBIS_CLEAN_V2/metadata_clean.csv` 结构化整理。
-- **主线权重（Gradio 默认）**：`outputs/lora/mammo_sd15_v6_allMLO/final_lora`；答辩版前端已隐藏 LoRA 路径、LoRA scale 与 Negative Prompt，避免误操作。
-- **实验线**：已从 **均衡密度 captions** 构建 **LoRA v6** 数据集与训练脚本（参见 [`docs/开发日志.md`](docs/开发日志.md) 同日条目）；如需切换权重，请通过 CLI 或 API 显式指定 **`--lora-path`**。
-- **默认行为**：`run_mammo_sd15.py` 默认 **全图模式**、默认开启 `--source-quality-sort`、可选后处理与标签守护；关闭分别用 **`--mode patch`**、`--no-postprocess`、`--no-legacy-label-guard`
-- **后处理（生成脚本 `--postprocess`）**：沿用频域链路，但其中 **`blend=0.4`**、**`fill_voids=False`**（避免评审 **ARTIFACT_BUBBLES** 假阳性）；与独立 `postprocess_freq.py` CLI 的默认 **`PostprocessParams`** 不尽相同
-- **密度与 Prompt**：当 **`--filter-density`** 恰好为单个档位（fatty/scattered/heterogeneous/dense）时，正向 prompt 会与训练 caption **英文密度短语**及对 **`--filter-view`（MLO/CC）** 的体位措辞 **自动对齐**
-- **源图**：**`filter_source_pool`** 会筛掉极高长宽比图源（默认 **`--max-source-aspect-ratio 2.2`**）；全图推理隐式 **`fullimage`** 缩放带 **较长边推理 ≤1024** 的安全封顶，并按需保证短边 **`--fullimage-min-short-side`（默认 384）**
-- **金属标记**：检出生成图中的 **_BB 状高亮标记** → 写入前整条丢弃并重抽图源； **`--postprocess`** 末尾再次扫描并对残留做 **原位涂补中值**
-- **标签守护**：开启 **`--legacy-label-guard`** 且有 **`QWEN_API_KEY`** 时，批次结束跑 **POST Qwen‑VL**，**每张图 HTTP 超时 60s**，**patch / 全图均执行**（已移除「仅因全图就跳过 VL」的旧逻辑）；角落 OCR 清除函数保留于仓库但 **主流程已不再调用**，改依赖 VL
+- **硬件门槛**：推理需 **NVIDIA GPU（≥8GB 显存）**，推荐 RTX 3060 及以上。因硬件门槛不做线上部署，界面截图见 [`medi-diff-demonstration/`](medi-diff-demonstration/)。
+- **训练数据**：基于 [`sposso/CBIS-DDSM-DATASET`](https://github.com/sposso/CBIS-DDSM-DATASET)，经 JPEG 筛选、标签清洗、mask 提取后产出 `CBIS_CLEAN_V2/metadata_clean.csv`。预处理管线：`clean_cbis.py` → `build_breast_masks.py` → `clean_training_labels.py` → `generate_captions.py`。
+- **主线权重**：`outputs/lora/mammo_sd15_v6_allMLO/final_lora`（r=32，全 MLO 视图训练），由 `train_mammo_lora.py` + `prepare_lora_dataset_v5.py` 产出。
+- **默认推理**：`run_mammo_sd15.py` 默认 **全图模式**（`--mode full-image`），`strength=0.44`，`guidance_scale=7.5`，`num_steps=40`（DPM-Solver++）。源图经过形态预筛（`circularity≥0.30`，`convex_defect≤0.45`）。
+- **标签守护**：`--legacy-label-guard`（默认开）进行启发式标签清除 + 亮斑修补，配合 Qwen-VL 后验证。
+- **后处理、频域校正、源图质量排序**：已归档，主线不再使用。
 
 ---
 
@@ -175,6 +175,20 @@ bash apps/start.sh
 
 停止：`bash apps/stop.sh` 或 Ctrl+C。开发热重载：`bash apps/start.sh --api-reload`。完整参数见 `bash apps/start.sh --help`。
 
+### 界面预览
+
+系统需 NVIDIA GPU 推理，不做线上部署。以下为本地运行界面截图：
+
+| 截图 | 说明 |
+|------|------|
+| ![生成面板](medi-diff-demonstration/图片%201.png) | 生成 Tab — 单面板：体位/密度筛选、数量、高级采样参数 |
+| ![画廊浏览](medi-diff-demonstration/图片%202.png) | 画廊 Tab — 浏览全部模式，4 列预览 + 文件名标签 |
+| ![源图对比](medi-diff-demonstration/图片%203.png) | 画廊 Tab — 源图对比模式，生成图/源图并排 |
+| ![精选导出](medi-diff-demonstration/图片%204.png) | 画廊 Tab — 精选导出：按评估排序、勾选、一键导出 |
+| ![一键流水线](medi-diff-demonstration/图片%205.png) | 一键流水线 Tab — 生成→评估→顾问报告全流程 |
+| ![评估](medi-diff-demonstration/图片%206.png) | 评估 Tab — 通过率/均分/BRISQUE/A-F 分项/排序预览 |
+| ![调参历史](medi-diff-demonstration/图片%207.png) | 调参历史 Tab — 最近 5 轮参数与指标回滚 |
+
 ### 单独启动（调试）
 
 ```bash
@@ -207,7 +221,67 @@ uvicorn apps.api_server:app --host 0.0.0.0 --port 8000
 | `hf_cache/` | SD1.5 本地离线快照 |
 | `archive/` | 废案与旧备份（不参与主流程） |
 
-详细路径说明见 [`docs/项目结构说明_交接版.md`](docs/项目结构说明_交接版.md)。
+详细路径说明见 [`docs/developer/项目结构说明.md`](docs/developer/项目结构说明.md)。
+
+---
+
+## 监控与日志
+
+### 健康检查
+
+FastAPI 提供 `GET /health` 端点，返回服务状态快照：
+
+```json
+{
+  "ok": true,
+  "uptime_seconds": 12345.6,
+  "root": "/path/to/medi-diff",
+  "gpu": {
+    "cuda_available": true,
+    "cuda_device_name": "NVIDIA RTX 4090",
+    "cuda_memory_allocated_gb": 3.5,
+    "cuda_memory_reserved_gb": 4.2
+  },
+  "memory": { "rss_mb": 1234.5, "vms_mb": 5678.9 },
+  "sd15_model_exists": true,
+  "sd15_lora_exists": true,
+  "metadata_csv_exists": true
+}
+```
+
+访问方式：`curl http://localhost:8000/health` 或浏览器打开 `http://localhost:8000/docs` → `/health`。
+
+### 步骤耗时
+
+生成脚本 `run_mammo_sd15.py` 在关键步骤打点，日志格式如下：
+
+```
+2026-05-17 22:00:01 [INFO] Device: cuda  Mode: full-image
+2026-05-17 22:00:12 [INFO] Model+LoRA loaded in 11.2s
+2026-05-17 22:00:15 [INFO] Selected 24 candidate sources for 6 requested images (2.8s)
+2026-05-17 22:00:18 [INFO]   [1/24] 3.2s
+2026-05-17 22:00:21 [INFO]   [2/24] 2.9s
+...
+2026-05-17 22:01:30 [INFO] Done. 6 images → outputs/generated/... | total 89.3s (14.9s/img)
+```
+
+### 请求日志
+
+FastAPI 通过中间件记录每个 HTTP 请求的方法、路径、状态码和耗时：
+
+```
+2026-05-17 22:00:01 [INFO] GET /health → 200 0.002s
+2026-05-17 22:00:30 [INFO] POST /generate/sd15 → 200 0.005s
+2026-05-17 22:01:30 [INFO] Job a1b2c3d4e5f6 succeeded in 85.3s (rc=0)
+```
+
+### 日志位置
+
+| 服务 | 日志路径 |
+|------|---------|
+| Gradio | `/tmp/gradio_ui_7860.log`（`start.sh` 自动重定向） |
+| FastAPI | `/tmp/fastapi_8000.log`（`start.sh` 自动重定向） |
+| 生成脚本 | stdout/stderr，被父进程捕获 |
 
 ---
 
@@ -241,13 +315,29 @@ uvicorn apps.api_server:app --host 0.0.0.0 --port 8000
 1. **域内规则体系**：A～F 组 16 维分项（构图/灰度/纹理/伪影/分布/解剖）+ BRISQUE + 功率谱 β，产出 `ok`/`total_score`，用于筛图与调参。
 2. **通用深度学习指标**：FID/KID、Precision–Recall、sfid_spatial768（写入 `summary.json → academic_metrics`），用于横向对比。
 
-分项公式见 [`docs/评估标准说明_交接版.md`](docs/评估标准说明_交接版.md)。  
+分项公式见 [`docs/评估标准说明.md`](docs/评估标准说明.md)。  
 **注意**：`eval_profile=full` 下 **`GRID_SEAM`**、**`SKIN_LINE_MISSING`** 等多走 **`soft_reasons`**，只影响语义分与排序，**不作为 `hard_tags` 一票否决**；调参请同时看 **`strict_pass_rate`** 与肉眼。自动校准请让 **`--real-images-dir`**（或流水线/Gradio 自动解析的目录）与 **`--filter-density`** 所代表的 **真实钼靶子集**一致，避免 dense 生成却用 scattered 基线（或反之）。
+---
+
+## 容错设计
+
+系统在多个环节做了防御性处理，确保单点故障不会导致全流程崩溃。详细说明见 [`docs/developer/容错设计.md`](docs/developer/容错设计.md)。
+
+| 边界情况 | 处理策略 |
+|---------|---------|
+| **LLM 输出格式错误** | `ask_advisor.py` 中 `_extract_assistant_text()` 逐层 try/except（KeyError → IndexError → TypeError），解析失败抛出可读 `RuntimeError`；`next_run_params.py` 对 JSON 解析失败返回回退默认值 |
+| **API 限流 / 网络超时** | 文本 API 调用 60s 超时，Qwen-VL POST 校验每图 60s 超时；连接失败时抛出明确错误信息而非静默丢弃 |
+| **模型权重缺失** | `/health` 端点启动即校验关键路径存在性；生成脚本在 LoRA 路径不存在时 `logger.warning` 并继续（允许仅用 base model 调试） |
+| **源图像质量不足** | `filter_source_pool()` 预过滤：极端宽高比（>2.2）、面积过大/过小、圆形度<0.30、凸缺陷>0.45 的源图直接丢弃；标注伪影过重的源图降级为备选池 |
+| **生成结果异常** | 评估系统 16 维规则 + `hard_tags`（BANDING / SHAPE_ODD / ARTIFACT_BUBBLES 等）一票否决；病变样图案检测（`_suspicious_lesion_stats`）自动跳过异常生成 |
+| **子进程挂死** | Gradio/API 通过 `subprocess.run()` 调用脚本，依赖外部进程自然超时；FastAPI 任务记录 `elapsed_seconds` 用于事后排查 |
+| **Pydantic 校验** | API 层所有输入通过 Pydantic `Field(ge=..., le=...)` 做范围约束，非法参数在进入管线前被拦截并返回 422 |
+
 ---
 
 ## 归档路线说明
 
-以下路线在早期实验中使用，结论已记录在 `docs/开发日志.md`，脚本保留用于复现：
+以下路线在早期实验中使用，结论已记录在 `docs/developer/开发日志.md`，脚本保留用于复现：
 
 | 路线 | 主要脚本 | 结论 |
 |------|----------|------|
@@ -265,4 +355,4 @@ uvicorn apps.api_server:app --host 0.0.0.0 --port 8000
 3. **指标写法**：参见 `docs/评价体系说明.md`：规则分项为主，`academic_metrics` 中与 FID/PRC 等可比指标并列说明及局限。
 4. **多轮对比**：`compare_runs.py` 汇总各轮 pass_rate / mean_score / BRISQUE 对比表。
 5. **可视化**：`make_top5_compare.py` 生成真实图 vs 生成图对比条。
-6. **消融**：`scripts/tests/run_ablation.py` 可复现单变量对照实验（固定 seed、同源图、逐变量改动），自动汇总对比表；历史消融记录见 `docs/开发日志.md` 2026-05-08 条目。
+6. **消融**：`scripts/tests/run_ablation.py` 可复现单变量对照实验（固定 seed、同源图、逐变量改动），自动汇总对比表；历史消融记录见 `docs/developer/开发日志.md` 2026-05-08 条目。

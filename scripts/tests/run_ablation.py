@@ -66,9 +66,6 @@ def main():
             "--output-base", str(GEN_OUT),
             "--output-subdir-prefix", tag,
         ]
-        if not exp["postprocess"]:
-            gen_cmd.append("--no-postprocess")
-
         t0 = time.time()
         print("  Generating...")
         r = run(gen_cmd)

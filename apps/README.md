@@ -20,4 +20,4 @@
 - **LoRA** 由程序内部固定为 `outputs/lora/mammo_sd15_v6_allMLO/final_lora`；如需研究性切换权重或负向提示词，请使用 CLI/API，不放在答辩界面中。
 - 顾问写入的 `outputs/reports/LATEST_NEXT_RUN.json`：推荐用 CLI **`run_full_report.py --from-latest-tuning`** 复跑；源码中 `load_latest_next_run_into_tuning()` 目前**未绑定**到前端按钮。历史与回滚见 **「调参历史」** Tab（`PARAM_HISTORY.json` / `--rollback` 逻辑）。
 
-上线前可执行：`python3 scripts/tools/verify_ui_wiring.py`（参见 `docs/用户操作手册.md` 「上线前自检」）。
+上线前可执行：`python3 scripts/tools/verify_ui_wiring.py`（参见 `docs/developer/用户操作手册.md` 「上线前自检」）。

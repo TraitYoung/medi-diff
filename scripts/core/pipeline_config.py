@@ -44,10 +44,10 @@ INT_KEYS = frozenset({
 
 @dataclass
 class GenParams:
-    """SD1.5 + LoRA + patch-overlap generation parameters."""
+    """SD1.5 + LoRA generation parameters (full-image primary, patch fallback)."""
     overlap_ratio: float = 0.85
-    strength: float = 0.36
-    guidance_scale: float = 6.5
+    strength: float = 0.44
+    guidance_scale: float = 7.5
     num_steps: int = 50
     scheduler: str = "dpm"
     patch_size: int = 640
@@ -78,6 +78,8 @@ class GenParams:
     negative_prompt: str = (
         "face, color, text, letters, numbers, labels, watermark, marker, "
         "metal marker, round white dots, circular blobs, random calcifications, "
+        "mass, tumor, lesion, nodule, fibroadenoma, circumscribed mass, "
+        "microcalcification cluster, clustered calcifications, suspicious opacity, "
         "watercolor smearing, cloudy texture, radial fan blur, cone blur, "
         "jagged edge, broken border, overexposed, mosaic, artifacts"
     )
@@ -100,8 +102,8 @@ class LabelGuardParams:
 
 @dataclass
 class PostprocessParams:
-    """Frequency-domain and spatial postprocessing parameters."""
-    enabled: bool = True
+    """Frequency-domain and spatial postprocessing parameters (archived hook)."""
+    enabled: bool = False
     winsorize: bool = True
     winsorize_low: float = 0.5
     winsorize_high: float = 99.5
