@@ -71,7 +71,6 @@ def main() -> None:
     p.add_argument("--fullimage-long-side", type=int, default=768)
     p.add_argument("--fullimage-output-long-side", type=int, default=2048)
     # Postprocess flags archived — see archive/postprocess/
-    p.add_argument("--bg-clean", action="store_true", default=False)
     p.add_argument("--source-quality-sort", action="store_true", default=False)
     p.add_argument("--no-source-quality-sort", action="store_false",
                    dest="source_quality_sort")
@@ -121,9 +120,7 @@ def main() -> None:
         ]
         if args.source_seed is not None:
             gen_cmd.extend(["--source-seed", str(args.source_seed)])
-        if args.bg_clean:
-            gen_cmd.append("--bg-clean")
-        # Postprocess and source-quality-sort flags archived
+        # Postprocess and bg-clean flags archived
 
         t0 = time.time()
         r = _run(gen_cmd, "GENERATE")
@@ -205,7 +202,7 @@ def main() -> None:
                 if args.mode == 'full-image':
                     prompt_lines.append("请给出具体的参数调整建议（strength, guidance_scale, num_steps 等），")
                 else:
-                    prompt_lines.append("请给出具体的参数调整建议（strength, overlap_ratio, guidance_scale 等），")
+                    prompt_lines.append("请给出具体的参数调整建议（strength, guidance_scale, num_steps 等），")
                 prompt_lines.append("以 JSON 格式输出 parameters 字段，并附中文解释。")
 
                 advisor_prompt = "\n".join(prompt_lines)

@@ -44,7 +44,7 @@ app = FastAPI(
     title="Mammography Diffusion Generation API",
     description=(
         "乳腺钼靶扩散生成系统 REST API（毕业设计）。\n\n"
-        "**主线**：`POST /generate/sd15` — SD1.5 + LoRA + Patch-Overlap img2img。\n"
+        "**主线**：`POST /generate/sd15` — SD1.5 + LoRA full-image img2img。\n"
         "**归档**：`POST /generate/sdxl` — SDXL Inpaint（历史路线，仍可复现）。\n"
         "异步任务：提交后用 `GET /jobs/{id}` 轮询状态；完成后用 `GET /batches` 查看结果。"
     ),
@@ -63,16 +63,12 @@ if REVIEWS_DIR.exists():
 # ─── 数据模型 ─────────────────────────────────────────────────────────────────
 
 class GenerateSD15Request(BaseModel):
-    """SD1.5 + LoRA + Patch-Overlap 主线生成请求（推荐）。"""
+    """SD1.5 + LoRA full-image 主线生成请求（推荐）。"""
     num_images: int = Field(default=6, ge=1, le=50, description="生成张数")
     seed: int = Field(default=2026, description="随机种子")
     num_steps: int = Field(default=50, ge=10, le=80, description="扩散推理步数")
     strength: float = Field(default=0.42, ge=0.05, le=0.80, description="img2img 重绘强度")
     guidance_scale: float = Field(default=8.5, ge=1.0, le=12.0, description="CFG 强度")
-    overlap_ratio: float = Field(default=0.90, ge=0.40, le=0.95, description="Patch 重叠率")
-    global_guide_blend: float = Field(default=0.35, ge=0.0, le=0.70, description="全局引导混合比（≤0.70）")
-    global_guide_strength: float = Field(default=0.20, ge=0.0, le=0.60, description="全局引导 img2img 强度")
-    blend_sigma_divisor: float = Field(default=1.55, ge=1.05, le=3.0, description="接缝高斯 σ 控制")
     lora_path: str = Field(default=str(DEFAULT_LORA), description="LoRA 权重目录")
     output_subdir_prefix: str = Field(default="api_sd15", min_length=1, max_length=80)
     filter_view: str = Field(default="MLO", description="体位筛选：MLO/CC/空=不限")
@@ -397,7 +393,7 @@ def get_param_history() -> list[dict]:
 
 @app.post("/generate/sd15", summary="提交 SD1.5 主线生成任务（推荐，异步）")
 def generate_sd15(req: GenerateSD15Request) -> JobRecord:
-    """使用 SD1.5 + LoRA + Patch-Overlap 生成乳腺钼靶图像（主线方案）。"""
+    """使用 SD1.5 + LoRA full-image 生成乳腺钼靶图像（主线方案）。"""
     lora_abs = _resolve_under_root(req.lora_path or str(DEFAULT_LORA), must_exist=False)
     command = [
         sys.executable, "scripts/generation/run_mammo_sd15.py",
@@ -408,10 +404,6 @@ def generate_sd15(req: GenerateSD15Request) -> JobRecord:
         "--num-steps", str(req.num_steps),
         "--strength", str(req.strength),
         "--guidance-scale", str(req.guidance_scale),
-        "--overlap-ratio", str(req.overlap_ratio),
-        "--global-guide-blend", str(req.global_guide_blend),
-        "--global-guide-strength", str(req.global_guide_strength),
-        "--blend-sigma-divisor", str(req.blend_sigma_divisor),
         "--output-subdir-prefix", req.output_subdir_prefix,
     ]
     if METADATA_CSV.is_file():

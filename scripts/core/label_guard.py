@@ -1,12 +1,11 @@
 """Pluggable label/artifact guard for mammography generation.
 
-Provides stateless image filtering functions that can be applied as pre-filter
-(before SD generation) or post-filter (after SD generation). Each function takes
-and returns a (H,W) uint8 grayscale numpy array.
+Stateless post-generation filtering: erase DICOM burn-in text from background,
+fade bright border labels, optionally clean entire background, feather canvas edges.
+Each function takes and returns a (H,W) uint8 grayscale numpy array.
 
-The L1 heuristic and Qwen-VL bbox integration remains in
-scripts/preprocessing/mammo_label_heuristic.py; this module wraps the fixed-order
-erasure and canvas-edge operations that were previously inline in run_mammo_sd15.py.
+Removed from mainline (2026-05-19): strip_crop, inpaint_interior_bright_spots,
+clean_background. These were never called by the active generation path.
 """
 
 from __future__ import annotations
@@ -18,24 +17,6 @@ import numpy as np
 # ═══════════════════════════════════════════════════════════════════════════════
 # Individual filter functions
 # ═══════════════════════════════════════════════════════════════════════════════
-
-def strip_crop(
-    gray: np.ndarray,
-    top: float = 0.04,
-    bottom: float = 0.04,
-    left: float = 0.03,
-    right: float = 0.03,
-) -> np.ndarray:
-    """Conservative border strip crop to remove DICOM annotation bands."""
-    h, w = gray.shape[:2]
-    y1 = int(round(h * top))
-    y2 = h - int(round(h * bottom))
-    x1 = int(round(w * left))
-    x2 = w - int(round(w * right))
-    if y2 > y1 + 16 and x2 > x1 + 16:
-        return gray[y1:y2, x1:x2]
-    return gray
-
 
 def erase_background_labels(gray: np.ndarray) -> np.ndarray:
     """Erase DICOM burn-in labels (L/MLO/RMLO/device text) from background regions.
@@ -245,144 +226,3 @@ def feather_canvas_edge(
     return np.clip(result, 0, 255).astype(np.uint8)
 
 
-def inpaint_interior_bright_spots(gray: np.ndarray) -> np.ndarray:
-    """Inpaint isolated bright-spot artifacts inside the breast region.
-
-    Targets small high-intensity CCs (5-300px) that are surrounded by
-    relatively dark tissue — the hallmark of SD-generated phantom blobs.
-    True calcifications (surrounded by dense tissue > Otsu threshold) are
-    protected and left intact.
-    """
-    result = gray.copy()
-    h, w = gray.shape[:2]
-
-    # Build breast foreground mask (coarse)
-    otsu_thr, _ = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    fg_thr = max(int(otsu_thr * 0.5), 10)
-    _, fg_mask = cv2.threshold(gray, fg_thr, 255, cv2.THRESH_BINARY)
-    k_close = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (25, 25))
-    fg_mask = cv2.morphologyEx(fg_mask, cv2.MORPH_CLOSE, k_close, iterations=2)
-    k_erode = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
-    fg_interior = cv2.erode(fg_mask, k_erode, iterations=3)
-
-    breast_pixels = gray[fg_interior > 0]
-    if len(breast_pixels) < 500:
-        return result
-
-    # Detect very bright spots: top 0.5% within breast
-    hi_thr = float(np.percentile(breast_pixels, 99.5))
-    global_median = float(np.median(breast_pixels))
-    dense_thr = float(otsu_thr)  # threshold for "dense tissue"
-
-    bright_bin = np.zeros((h, w), dtype=np.uint8)
-    bright_bin[(gray >= hi_thr) & (fg_interior > 0)] = 255
-
-    n, labels, stats, _ = cv2.connectedComponentsWithStats(bright_bin, connectivity=8)
-    if n <= 1:
-        return result
-
-    inpaint_mask = np.zeros((h, w), dtype=np.uint8)
-    band = 20  # neighbourhood radius for context check
-
-    for i in range(1, n):
-        area = int(stats[i, cv2.CC_STAT_AREA])
-        if area < 5 or area > 300:
-            continue
-
-        x0 = int(stats[i, cv2.CC_STAT_LEFT])
-        y0 = int(stats[i, cv2.CC_STAT_TOP])
-        bw_ = int(stats[i, cv2.CC_STAT_WIDTH])
-        bh_ = int(stats[i, cv2.CC_STAT_HEIGHT])
-
-        nx1, ny1 = max(0, x0 - band), max(0, y0 - band)
-        nx2, ny2 = min(w, x0 + bw_ + band), min(h, y0 + bh_ + band)
-        nb_gray = gray[ny1:ny2, nx1:nx2]
-        nb_lbl = labels[ny1:ny2, nx1:nx2]
-        outside = nb_gray[nb_lbl != i].flatten()
-
-        if len(outside) < 10:
-            continue
-
-        # Skip if neighbourhood is predominantly dense tissue (likely real calcification)
-        dense_frac = float(np.sum(outside > dense_thr)) / len(outside)
-        if dense_frac > 0.40:
-            continue
-
-        # Check if CC is in an isolated/dark context relative to global median
-        nb_median = float(np.median(outside))
-        if nb_median > global_median * 1.4:
-            continue  # surrounded by bright tissue — not isolated artifact
-
-        inpaint_mask[labels == i] = 255
-
-    if not np.any(inpaint_mask):
-        return result
-
-    # Dilate mask slightly for cleaner inpaint boundary
-    k_dil = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-    inpaint_mask = cv2.dilate(inpaint_mask, k_dil, iterations=1)
-
-    result = cv2.inpaint(result, inpaint_mask, inpaintRadius=5,
-                         flags=cv2.INPAINT_TELEA)
-    return result
-
-
-def clean_background(gray: np.ndarray) -> np.ndarray:
-    """Zero out pure-background regions outside the breast main body.
-
-    Protects edge-adjacent thin tissue via distance-transform gradient fade.
-    """
-    if gray.ndim == 3:
-        gray = cv2.cvtColor(gray, cv2.COLOR_BGR2GRAY)
-    h, w = gray.shape
-
-    lo = float(np.percentile(gray, 2))
-    hi = float(np.percentile(gray, 98))
-    if hi - lo < 5:
-        return gray
-
-    thresh_val = max(int(lo + (hi - lo) * 0.025), 3)
-    _, bin_img = cv2.threshold(gray, thresh_val, 255, cv2.THRESH_BINARY)
-
-    close_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (25, 25))
-    closed = cv2.morphologyEx(bin_img, cv2.MORPH_CLOSE, close_k, iterations=2)
-
-    n_cc, labels_map, stats, _ = cv2.connectedComponentsWithStats(closed, connectivity=8)
-    if n_cc <= 1:
-        return gray
-
-    areas = stats[1:, cv2.CC_STAT_AREA]
-    order = np.argsort(-areas)
-    li0 = int(order[0])
-    breast_label = li0 + 1
-    breast_mask = np.where(labels_map == breast_label, np.uint8(255), np.uint8(0))
-    max_area = float(areas[li0])
-
-    for rank in range(1, min(3, len(order))):
-        li_r = int(order[rank])
-        cc_label = li_r + 1
-        ar = float(areas[li_r])
-        if ar < max_area * 0.08:
-            break
-        cx1 = stats[breast_label, cv2.CC_STAT_LEFT] + stats[breast_label, cv2.CC_STAT_WIDTH] // 2
-        cx2 = stats[cc_label, cv2.CC_STAT_LEFT] + stats[cc_label, cv2.CC_STAT_WIDTH] // 2
-        if abs(int(cx2) - int(cx1)) <= int(w * 0.60):
-            breast_mask = np.where(
-                (breast_mask == 255) | (labels_map == cc_label),
-                np.uint8(255),
-                np.uint8(0),
-            )
-
-    protect_r = max(35, int(min(h, w) * 0.06))
-    dil_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (protect_r * 2 + 1, protect_r * 2 + 1))
-    protected = cv2.dilate(breast_mask, dil_k)
-
-    hx = max(35, (w // 9) | 1)
-    horiz = cv2.getStructuringElement(cv2.MORPH_RECT, (hx, 5))
-    protected = cv2.dilate(protected, horiz, iterations=2)
-
-    dist = cv2.distanceTransform((protected > 0).astype(np.uint8), cv2.DIST_L2, 5)
-    feather_px = float(max(18, int(min(h, w) * 0.022)))
-    alpha = np.clip(dist / feather_px, 0.0, 1.0).astype(np.float32)
-    result = (gray.astype(np.float32) * alpha).clip(0, 255).astype(np.uint8)
-    return result

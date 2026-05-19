@@ -114,21 +114,6 @@ def _apply_upscale(gray: np.ndarray, mode: str = "none",
     return cv2.resize(gray, (new_w, new_h), interpolation=interp)
 
 
-def _letterbox_to_target(gray: np.ndarray, target_h: int = 768,
-                         target_w: int = 1024) -> np.ndarray:
-    """Letterbox to (target_h, target_w) with zero-padding."""
-    h, w = gray.shape
-    scale = min(target_h / h, target_w / w)
-    new_h, new_w = int(round(h * scale)), int(round(w * scale))
-    resized = cv2.resize(gray, (new_w, new_h), interpolation=cv2.INTER_AREA)
-    pad_h = target_h - new_h
-    pad_w = target_w - new_w
-    top, bottom = pad_h // 2, pad_h - pad_h // 2
-    left, right = pad_w // 2, pad_w - pad_w // 2
-    return cv2.copyMakeBorder(resized, top, bottom, left, right,
-                               cv2.BORDER_CONSTANT, value=0)
-
-
 # ── Source pool ─────────────────────────────────────────────────────────────
 
 def _has_source_artifact_burden(
@@ -535,7 +520,6 @@ def fullimage_generate(
     guidance_scale: float = 7.9,
     num_inference_steps: int = 50,
     generator: torch.Generator | None = None,
-    gabor_alpha: float = 0.5,
     fullimage_long_side: int = 768,
     fullimage_min_short_side: int = 384,
     fullimage_output_long_side: int = 2048,
@@ -583,140 +567,6 @@ def fullimage_generate(
         result_gray = resize_long_side_gray(result_gray, fullimage_output_long_side)
 
     return result_gray
-
-
-def run_global_guide(
-    pipe,
-    src_gray: np.ndarray,
-    device: torch.device,
-    generator: torch.Generator,
-    guide_scale: float = 0.3,
-    strength: float = 0.25,
-    prompt: str = "",
-    negative_prompt: str = "",
-    num_steps: int = 25,
-) -> np.ndarray:
-    """Low-res global anatomic guide for patch-overlap mode."""
-    h, w = src_gray.shape
-    guide_h, guide_w = (h // 4 // 8) * 8, (w // 4 // 8) * 8
-
-    src_small = cv2.resize(src_gray, (guide_w, guide_h), interpolation=cv2.INTER_AREA)
-    src_rgb = cv2.cvtColor(src_small, cv2.COLOR_GRAY2RGB)
-
-    result = pipe(
-        prompt=prompt,
-        negative_prompt=negative_prompt,
-        image=Image.fromarray(src_rgb),
-        strength=guide_scale,
-        guidance_scale=strength,
-        num_inference_steps=min(num_steps, 25),
-        generator=generator,
-    ).images[0]
-
-    result_gray = np.array(result.convert("L"))
-    return cv2.resize(result_gray, (w, h), interpolation=cv2.INTER_LANCZOS4)
-
-
-def build_latent_smooth_field(h: int, w: int, seed: int = 0) -> np.ndarray:
-    """Low-frequency noise field for cross-patch consistency."""
-    small_h, small_w = max(1, h // 32), max(1, w // 32)
-    g = torch.Generator(device="cpu").manual_seed(seed)
-    small = torch.randn(1, 1, small_h, small_w, generator=g, dtype=torch.float32)
-    field = torch.nn.functional.interpolate(
-        small, size=(h, w), mode="bilinear", align_corners=False)
-    return field.squeeze().numpy()
-
-
-def patch_generate(
-    src_gray: np.ndarray,
-    pipe,
-    prompt: str,
-    negative_prompt: str,
-    strength: float = 0.42,
-    guidance_scale: float = 7.9,
-    num_inference_steps: int = 50,
-    patch_size: int = 640,
-    stride: int = 96,
-    gabor_alpha: float = 0.5,
-    blend_mode: str = "hann",
-    blend_sigma_divisor: float = 1.48,
-    global_guide_gray: np.ndarray | None = None,
-    global_guide_blend: float = 0.44,
-    latent_smooth_field: np.ndarray | None = None,
-    base_seed: int = 2026,
-    bg_min_signal_frac: float = 0.012,
-    bg_pixel_min: int = 4,
-    pyramid_levels: int = 4,
-) -> np.ndarray:
-    """Patch-overlap img2img with Hann-window blending."""
-    h, w = src_gray.shape
-    device = pipe.device
-
-    y_starts = list(range(0, max(1, h - patch_size), stride))
-    y_starts.append(max(0, h - patch_size))
-    x_starts = list(range(0, max(1, w - patch_size), stride))
-    x_starts.append(max(0, w - patch_size))
-    y_starts = sorted(set(y_starts))
-    x_starts = sorted(set(x_starts))
-
-    accum = np.zeros((h, w), dtype=np.float64)
-    weight = np.zeros((h, w), dtype=np.float64)
-
-    # Precompute blend window
-    if blend_mode == "hann":
-        wy = np.hanning(patch_size)
-        wx = np.hanning(patch_size)
-    elif blend_mode == "pyramid":
-        wy = np.hanning(patch_size) ** pyramid_levels
-        wx = np.hanning(patch_size) ** pyramid_levels
-    else:
-        t = np.arange(patch_size)
-        wy = np.clip(np.minimum(t / (patch_size * 0.15),
-                                (patch_size - 1 - t) / (patch_size * 0.15)), 0, 1)
-        wx = wy.copy()
-    window = np.outer(wy, wx)
-
-    for i, y0 in enumerate(tqdm(y_starts, desc="Patches", leave=False)):
-        for j, x0 in enumerate(x_starts):
-            patch_idx = i * len(x_starts) + j
-            g = torch.Generator(device=device).manual_seed(base_seed + patch_idx)
-
-            patch = src_gray[y0:y0 + patch_size, x0:x0 + patch_size]
-            ph, pw = patch.shape
-            if ph < patch_size or pw < patch_size:
-                padded = np.zeros((patch_size, patch_size), dtype=np.uint8)
-                padded[:ph, :pw] = patch
-                patch = padded
-
-            patch_rgb = cv2.cvtColor(patch, cv2.COLOR_GRAY2RGB)
-            patch_pil = Image.fromarray(patch_rgb)
-
-            if global_guide_gray is not None:
-                gp = global_guide_gray[y0:y0 + patch_size, x0:x0 + patch_size]
-                if gp.shape != (patch_size, patch_size):
-                    tmp = np.zeros((patch_size, patch_size), dtype=np.uint8)
-                    tmp[:gp.shape[0], :gp.shape[1]] = gp
-                    gp = tmp
-                patch_pil = Image.blend(
-                    patch_pil,
-                    Image.fromarray(cv2.cvtColor(gp, cv2.COLOR_GRAY2RGB)),
-                    global_guide_blend)
-
-            result = pipe(
-                prompt=prompt, negative_prompt=negative_prompt,
-                image=patch_pil, strength=strength,
-                guidance_scale=guidance_scale,
-                num_inference_steps=num_inference_steps, generator=g,
-            ).images[0]
-
-            result_gray = np.array(result.convert("L"), dtype=np.float64)
-            accum[y0:y0 + patch_size, x0:x0 + patch_size] += result_gray * window
-            weight[y0:y0 + patch_size, x0:x0 + patch_size] += window
-
-    mask = weight > 0
-    result = np.zeros_like(accum)
-    result[mask] = accum[mask] / weight[mask]
-    return np.clip(result, 0, 255).astype(np.uint8)
 
 
 # ── Post-generation helpers ─────────────────────────────────────────────────
@@ -866,7 +716,7 @@ def main() -> None:
     from scripts.core.pipeline_config import GenParams
     from scripts.core.label_guard import (
         erase_background_labels, erase_bright_border_labels,
-        clean_background, feather_canvas_edge)
+        feather_canvas_edge)
     p = argparse.ArgumentParser(
         description="SD1.5+LoRA mammography image generation",
         formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -883,30 +733,10 @@ def main() -> None:
     # Mode
     g = p.add_argument_group("Generation Mode")
     g.add_argument("--mode", type=str, default="full-image",
-                   choices=["full-image", "patch"])
+                   choices=["full-image"])
     g.add_argument("--fullimage-long-side", type=int, default=768)
     g.add_argument("--fullimage-min-short-side", type=int, default=384)
     g.add_argument("--fullimage-output-long-side", type=int, default=2048)
-
-    # Patch
-    g = p.add_argument_group("Patch (patch mode)")
-    g.add_argument("--patch-size", type=int, default=640)
-    g.add_argument("--overlap-ratio", type=float, default=0.85)
-    g.add_argument("--stride", type=int, default=None)
-    g.add_argument("--blend-mode", type=str, default="hann",
-                   choices=["hann", "pyramid", "linear"])
-    g.add_argument("--blend-sigma-divisor", type=float, default=1.48)
-    g.add_argument("--pyramid-levels", type=int, default=4)
-    g.add_argument("--gabor-alpha", type=float, default=0.55)
-
-    # Global guide
-    g = p.add_argument_group("Global Guide")
-    g.add_argument("--global-guide", action="store_true", default=True)
-    g.add_argument("--no-global-guide", action="store_false", dest="global_guide")
-    g.add_argument("--global-guide-strength", type=float, default=0.25)
-    g.add_argument("--global-guide-blend", type=float, default=0.44)
-    g.add_argument("--global-guide-scale", type=float, default=0.3)
-    g.add_argument("--global-guide-cfg-scale", type=float, default=7.5)
 
     # Sampling
     g = p.add_argument_group("Sampling")
@@ -943,7 +773,6 @@ def main() -> None:
     g.add_argument("--no-legacy-label-guard", action="store_false",
                    dest="legacy_label_guard")
     g.add_argument("--preclean-border-labels", action="store_true", default=False)
-    g.add_argument("--bg-clean", action="store_true", default=False)
 
     # VL
     g.add_argument("--no-qwen-vl", action="store_true", default=False)
@@ -1020,10 +849,6 @@ def main() -> None:
     prompt = _build_prompt(args.filter_view, args.filter_density, GenParams.prompt)
     neg_prompt = args.negative_prompt if args.negative_prompt else GenParams.negative_prompt
 
-    # Stride
-    stride = args.stride if args.stride is not None else int(
-        args.patch_size * (1 - args.overlap_ratio))
-
     # Save params
     run_params = {
         "base_model_local": str(base_model_local) if base_model_local else None,
@@ -1037,9 +862,7 @@ def main() -> None:
         "guidance_scale": args.guidance_scale,
         "num_steps": args.num_steps,
         "scheduler": args.scheduler,
-        "gabor_alpha": args.gabor_alpha,
         "legacy_label_guard": args.legacy_label_guard,
-        "bg_clean": args.bg_clean,
         "canvas_edge_feather": 3,
         "metadata_csv": str(metadata_csv),
         "filter_view": args.filter_view,
@@ -1073,45 +896,19 @@ def main() -> None:
             src_gray = _inpaint_background_bright_markers(src_gray)
 
         src_gray = enhance_input_contrast(src_gray)
-        if args.mode == "patch":
-            src_gray = _letterbox_to_target(src_gray)
 
         base_seed = args.seed + idx * 17
         t0 = time.time()
 
-        if args.mode == "full-image":
-            gen = torch.Generator(device=device).manual_seed(base_seed)
-            result = fullimage_generate(
-                src_gray=src_gray, pipe=pipe, prompt=prompt,
-                negative_prompt=neg_prompt, strength=args.strength,
-                guidance_scale=args.guidance_scale,
-                num_inference_steps=args.num_steps, generator=gen,
-                fullimage_long_side=args.fullimage_long_side,
-                fullimage_min_short_side=args.fullimage_min_short_side,
-                fullimage_output_long_side=0)  # upscale deferred to after post-processing
-        else:
-            global_guide_gray = None
-            if args.global_guide:
-                gg = torch.Generator(device=device).manual_seed(base_seed + 3)
-                global_guide_gray = run_global_guide(
-                    pipe, src_gray, device, gg,
-                    guide_scale=args.global_guide_scale,
-                    strength=args.global_guide_strength,
-                    prompt=prompt, negative_prompt=neg_prompt,
-                    num_steps=args.num_steps)
-            latent_field = build_latent_smooth_field(768, 1024, seed=base_seed + 91)
-            result = patch_generate(
-                src_gray=src_gray, pipe=pipe, prompt=prompt,
-                negative_prompt=neg_prompt, strength=args.strength,
-                guidance_scale=args.guidance_scale,
-                num_inference_steps=args.num_steps,
-                patch_size=args.patch_size, stride=stride,
-                gabor_alpha=args.gabor_alpha, blend_mode=args.blend_mode,
-                blend_sigma_divisor=args.blend_sigma_divisor,
-                global_guide_gray=global_guide_gray,
-                global_guide_blend=args.global_guide_blend,
-                latent_smooth_field=latent_field, base_seed=base_seed,
-                pyramid_levels=args.pyramid_levels)
+        gen = torch.Generator(device=device).manual_seed(base_seed)
+        result = fullimage_generate(
+            src_gray=src_gray, pipe=pipe, prompt=prompt,
+            negative_prompt=neg_prompt, strength=args.strength,
+            guidance_scale=args.guidance_scale,
+            num_inference_steps=args.num_steps, generator=gen,
+            fullimage_long_side=args.fullimage_long_side,
+            fullimage_min_short_side=args.fullimage_min_short_side,
+            fullimage_output_long_side=0)  # upscale deferred to after post-processing
 
         logger.info("  [%d/%d] %.1fs", idx + 1, len(sources),
                      time.time() - t0)
@@ -1120,8 +917,6 @@ def main() -> None:
         if args.legacy_label_guard:
             result = erase_background_labels(result)
             result = erase_bright_border_labels(result)
-            if args.bg_clean:
-                result = clean_background(result)
             result = feather_canvas_edge(result, feather_px=3)
 
         result = _soften_isolated_bright_spots(result)
@@ -1147,7 +942,7 @@ def main() -> None:
             continue
 
         # Upscale after cleanup and lesion check so all processing runs at native SD resolution
-        if args.mode == "full-image" and args.fullimage_output_long_side > 0:
+        if args.fullimage_output_long_side > 0:
             result = resize_long_side_gray(result, args.fullimage_output_long_side)
 
         out_name = f"sd15_{saved_count:04d}.png"

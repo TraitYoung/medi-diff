@@ -354,7 +354,6 @@ def _param_history_rows() -> list[list]:
                 round(float(params.get("strength", 0)), 3),
                 round(float(params.get("guidance_scale", 0)), 2),
                 int(params.get("num_steps", 0)),
-                round(float(params.get("overlap_ratio", 0)), 2),
                 str(params.get("notes_zh", ""))[:60],
             ])
         return rows
@@ -432,7 +431,6 @@ def run_generation(
         "--output-base", str(GENERATED_DIR),
         "--mode", "full-image",
         "--fullimage-output-long-side", str(DEFAULT_OUTPUT_LONG_SIDE),
-        "--bg-clean",
     ]
     if filter_view and filter_view != "不限":
         command.extend(["--filter-view", filter_view])
@@ -471,7 +469,6 @@ def run_pipeline(
         "--eval-profile", eval_profile,
         "--output-base", str(GENERATED_DIR),
         "--fullimage-output-long-side", str(DEFAULT_OUTPUT_LONG_SIDE),
-        "--bg-clean",
     ]
     if filter_view and filter_view != "不限":
         command.extend(["--filter-view", filter_view])
@@ -936,7 +933,7 @@ with gr.Blocks(title="乳腺钼靶扩散生成系统") as demo:
             headers=[
                 "轮次", "时间", "来源标签",
                 "通过率", "严格通过率", "均分", "BRISQUE",
-                "strength", "guidance", "steps", "overlap",
+                "strength", "guidance", "steps",
                 "备注（截60字）",
             ],
             value=_param_history_rows(),
