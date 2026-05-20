@@ -19,7 +19,7 @@ from unittest.mock import MagicMock
 
 def test_resize_long_side_downscale():
     """Large image should be downscaled to target long side."""
-    from scripts.generation.run_mammo_sd15 import resize_long_side_gray
+    from scripts.core.image_utils import resize_long_side as resize_long_side_gray
 
     wide = np.random.RandomState(42).randint(0, 256, (3000, 2000), dtype=np.uint8)
     result = resize_long_side_gray(wide, 2048)
@@ -28,7 +28,7 @@ def test_resize_long_side_downscale():
 
 def test_resize_long_side_upscale():
     """Small image should be upscaled to target long side."""
-    from scripts.generation.run_mammo_sd15 import resize_long_side_gray
+    from scripts.core.image_utils import resize_long_side as resize_long_side_gray
 
     small = np.random.RandomState(42).randint(0, 256, (480, 768), dtype=np.uint8)
     result = resize_long_side_gray(small, 2048)
@@ -40,7 +40,7 @@ def test_resize_long_side_upscale():
 
 def test_resize_long_side_noop():
     """Image already at target should not be resized."""
-    from scripts.generation.run_mammo_sd15 import resize_long_side_gray
+    from scripts.core.image_utils import resize_long_side as resize_long_side_gray
 
     exact = np.random.RandomState(42).randint(0, 256, (1024, 2048), dtype=np.uint8)
     result = resize_long_side_gray(exact, 2048)
@@ -49,7 +49,7 @@ def test_resize_long_side_noop():
 
 def test_resize_long_side_zero_noop():
     """long_side=0 should keep native size."""
-    from scripts.generation.run_mammo_sd15 import resize_long_side_gray
+    from scripts.core.image_utils import resize_long_side as resize_long_side_gray
 
     native = np.random.RandomState(42).randint(0, 256, (800, 1200), dtype=np.uint8)
     result = resize_long_side_gray(native, 0)

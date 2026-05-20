@@ -38,6 +38,10 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT))
+from scripts.core.image_utils import resize_long_side
+
 _LOG = logging.getLogger(__name__)
 
 # 标签守护专用 VL：优先 QWEN_VL_LABEL_MODEL，否则与顾问等共用 QWEN_VL_MODEL
@@ -94,16 +98,6 @@ class LabelHeuristicResult:
 
 # ── 一级：H0 拓扑分析 ─────────────────────────────────────────────────────────
 
-def _resize_for_topo(gray: np.ndarray, max_side: int = 512) -> np.ndarray:
-    h, w = gray.shape[:2]
-    m = max(h, w)
-    if m <= max_side:
-        return gray
-    scale = max_side / float(m)
-    nh, nw = max(4, int(round(h * scale))), max(4, int(round(w * scale)))
-    return cv2.resize(gray, (nw, nh), interpolation=cv2.INTER_AREA)
-
-
 def topological_label_score(
     gray_u8: np.ndarray,
     *,
@@ -130,7 +124,7 @@ def topological_label_score(
     g = gray_u8
     if g.ndim == 3:
         g = cv2.cvtColor(g, cv2.COLOR_BGR2GRAY)
-    small = _resize_for_topo(g, topo_max_side)
+    small = resize_long_side(g, topo_max_side, only_downscale=True, min_side=4)
     h, w  = small.shape
 
     # 去噪后 Otsu 分割

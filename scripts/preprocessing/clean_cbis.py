@@ -30,8 +30,8 @@ import numpy as np
 from tqdm import tqdm
 
 ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT / "scripts/evaluation"))
-from review_generated_images import build_mask, is_image, resize_long_side  # noqa: E402
+sys.path.insert(0, str(ROOT))
+from scripts.core.image_utils import build_mask, is_image, resize_long_side
 
 DENSITY_NAMES = {
     "1": "fatty",
@@ -179,7 +179,7 @@ def quality_check(path: Path, args: argparse.Namespace) -> tuple[bool, list[str]
     if max(h0, w0) < args.min_long_side or min(h0, w0) < args.min_short_side:
         reasons.append("too_small_or_cropped")
 
-    gray = resize_long_side(gray0, args.resize_long_side) if args.resize_long_side > 0 else gray0
+    gray = resize_long_side(gray0, args.resize_long_side, only_downscale=True, min_side=16)
     mask = build_mask(gray)
     mask_ratio = float(np.count_nonzero(mask)) / float(mask.size)
     if mask_ratio < args.min_mask_ratio or mask_ratio > args.max_mask_ratio:

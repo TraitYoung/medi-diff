@@ -63,9 +63,10 @@ python3 scripts/tools/verify_ui_wiring.py
 
 ### Pipeline layers
 
-0. **Shared core library** (`scripts/core/`): Reusable modules imported by the generation pipeline. Contains:
+0. **Shared core library** (`scripts/core/`): Reusable modules imported by generation, evaluation, and preprocessing scripts. Contains:
    - `pipeline_config.py` — `GenParams` dataclass: single source of truth for all generation parameters (strength, guidance_scale, num_steps, scheduler, prompt, negative_prompt, fullimage sizes).
    - `label_guard.py` — Stateless image filter functions (label erasure, edge feathering) used post-generation by `run_mammo_sd15.py`.
+   - `image_utils.py` — Shared image utilities (2026-05-20): unified `resize_long_side`, `build_mask`, `is_image`, `largest_component`, `enhance_input_contrast`.  Eliminates 4 duplicate resize variants and 2 sys.path hacks.
    - `pipeline_orchestrator.py` removed (2026-05-19) — production uses `run_mammo_sd15.py` directly.
    - `generation_pipeline.py` archived to `archive/core/generation_pipeline.py` — `SDPipeline` class no longer used by active code.
    - Postprocess archived to `archive/core/postprocess_pipeline.py` and `archive/postprocess/`.

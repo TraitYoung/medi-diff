@@ -347,13 +347,13 @@ def _param_history_rows() -> list[list]:
                 entry.get("index", ""),
                 entry.get("recorded_at", "")[:16],
                 entry.get("source_tag", ""),
-                round(float(metrics.get("pass_rate", 0)), 3),
-                round(float(metrics.get("strict_pass_rate", 0)), 3),
-                round(float(metrics.get("mean_total_score", 0)), 2),
-                round(float(metrics.get("mean_brisque", 0)), 2),
-                round(float(params.get("strength", 0)), 3),
-                round(float(params.get("guidance_scale", 0)), 2),
-                int(params.get("num_steps", 0)),
+                round(float(metrics.get("pass_rate") or 0), 3),
+                round(float(metrics.get("strict_pass_rate") or 0), 3),
+                round(float(metrics.get("mean_total_score") or 0), 2),
+                round(float(metrics.get("mean_brisque") or 0), 2),
+                round(float(params.get("strength") or 0), 3),
+                round(float(params.get("guidance_scale") or 0), 2),
+                int(params.get("num_steps") or 0),
                 str(params.get("notes_zh", ""))[:60],
             ])
         return rows
@@ -450,7 +450,6 @@ def run_pipeline(
     seed: int,
     filter_view: str,
     filter_density: str,
-    eval_profile: str,
     from_latest_tuning: bool,
 ) -> str:
     command = [
@@ -466,7 +465,6 @@ def run_pipeline(
         "--strength", str(float(strength)),
         "--guidance-scale", str(float(guidance_scale)),
         "--seed", str(int(seed)),
-        "--eval-profile", eval_profile,
         "--output-base", str(GENERATED_DIR),
         "--fullimage-output-long-side", str(DEFAULT_OUTPUT_LONG_SIDE),
     ]
@@ -479,7 +477,7 @@ def run_pipeline(
     return _run(command)
 
 
-def run_review(batch_name: str, output_name: str, top_k: int, eval_profile: str):
+def run_review(batch_name: str, output_name: str, top_k: int):
     if not batch_name:
         return "请先选择一个生成批次。", "未选择批次。", []
     batch = GENERATED_DIR / batch_name
@@ -495,7 +493,6 @@ def run_review(batch_name: str, output_name: str, top_k: int, eval_profile: str)
         "--no-recursive",
         "--output-dir", str(output_dir),
         "--top-k", str(int(top_k)),
-        "--eval-profile", eval_profile,
         "--enable-seam-check",
     ]
     log = _run(command)
@@ -530,8 +527,6 @@ def load_latest_next_run_into_tuning():
 
 _VIEW_CHOICES = ["不限", "MLO", "CC"]
 _DENSITY_CHOICES = ["不限", "fatty", "scattered", "heterogeneous", "dense"]
-_EVAL_PROFILES = ["full"]
-
 # ── 莫兰蒂医用蓝主题 ─────────────────────────────────────────────────────────
 _THEME = gr.themes.Soft(
     primary_hue=gr.themes.colors.blue,
@@ -703,6 +698,10 @@ table tbody tr:hover { background: #E4F0F8 !important; }
 
 /* ─ Radio/Checkbox 选中色 ─ */
 input[type="radio"], input[type="checkbox"] { accent-color: #4A7FA5 !important; }
+
+/* ─ Tab 内容区最小尺寸 ─ */
+.tabs { min-width: 880px !important; }
+.tabitem { min-height: 440px !important; }
 """
 
 # ── UI 构建 ──────────────────────────────────────────────────────────────────
@@ -789,7 +788,6 @@ with gr.Blocks(title="乳腺钼靶扩散生成系统") as demo:
             p_seed = gr.Number(value=2026, precision=0, label="seed")
         with gr.Row():
             p_tag_prefix = gr.Textbox(value="gradio_pipeline", label="报告标签前缀")
-            p_eval_profile = gr.Dropdown(_EVAL_PROFILES, value="full", label="评估 Profile")
         with gr.Row():
             p_from_latest = gr.Checkbox(value=False, label="从 LATEST_NEXT_RUN.json 加载参数")
         p_btn = gr.Button("启动一键流水线", variant="primary")
@@ -805,7 +803,7 @@ with gr.Blocks(title="乳腺钼靶扩散生成系统") as demo:
                 p_tag_prefix, p_num_images, p_steps,
                 p_strength, p_guidance, p_seed,
                 p_filter_view, p_filter_density,
-                p_eval_profile, p_from_latest,
+                p_from_latest,
             ],
             outputs=[p_log],
         )
@@ -821,8 +819,7 @@ with gr.Blocks(title="乳腺钼靶扩散生成系统") as demo:
             r_refresh_btn = gr.Button("刷新批次列表")
         with gr.Row():
             r_output = gr.Textbox(value="", label="评估输出目录名（留空自动）")
-            r_eval_profile = gr.Dropdown(_EVAL_PROFILES, value="full", label="评估模式")
-            r_top_k = gr.Slider(1, 200, value=30, step=1, label="推荐图数量")
+            r_top_k = gr.Slider(1, 20, value=30, step=1, label="推荐图数量")
         r_btn = gr.Button("开始评估", variant="primary")
         r_summary = gr.Markdown("选择批次后点击开始评估。", elem_classes=["prose"])
         r_preview = gr.Gallery(label="评估排序预览", columns=4, height=420)
@@ -831,7 +828,7 @@ with gr.Blocks(title="乳腺钼靶扩散生成系统") as demo:
         r_refresh_btn.click(fn=refresh_eval_batch, inputs=[], outputs=[r_batch])
         r_btn.click(
             fn=run_review,
-            inputs=[r_batch, r_output, r_top_k, r_eval_profile],
+            inputs=[r_batch, r_output, r_top_k],
             outputs=[r_log, r_summary, r_preview],
         )
 
@@ -890,7 +887,7 @@ with gr.Blocks(title="乳腺钼靶扩散生成系统") as demo:
             )
             with gr.Row():
                 curated_preview = gr.Gallery(
-                    label="预览（勾号 = 已选）",
+                    label="预览",
                     columns=4,
                     height=400,
                     object_fit="contain",
@@ -921,34 +918,10 @@ with gr.Blocks(title="乳腺钼靶扩散生成系统") as demo:
                 outputs=[curated_export_status],
             )
 
-    # ── Tab 5: 调参历史 ──────────────────────────────────────────────────────
-    with gr.Tab("调参历史"):
-        gr.Markdown(
-            "### 顾问调参历史（`PARAM_HISTORY.json`）\n"
-            "> 来自 `run_full_report.py` 的历次推荐参数与对应评估指标。",
-            elem_classes=["prose"],
-        )
-        hist_refresh_btn = gr.Button("刷新历史")
-        hist_table = gr.Dataframe(
-            headers=[
-                "轮次", "时间", "来源标签",
-                "通过率", "严格通过率", "均分", "BRISQUE",
-                "strength", "guidance", "steps",
-                "备注（截60字）",
-            ],
-            value=_param_history_rows(),
-            interactive=False,
-        )
-        gr.Markdown("#### 最新顾问建议参数（LATEST_NEXT_RUN.json）", elem_classes=["prose"])
-        hist_load_btn = gr.Button("加载最新建议")
-        hist_latest_out = gr.Textbox(label="最新建议内容", lines=14, elem_classes=["log-box"])
-        hist_refresh_btn.click(fn=refresh_param_history, inputs=[], outputs=[hist_table])
-        hist_load_btn.click(fn=load_latest_next_run_into_tuning, inputs=[], outputs=[hist_latest_out])
-
-    # ── Tab 6: 评估汇总 ──────────────────────────────────────────────────────
+    # ── Tab 5: 评估汇总 ──────────────────────────────────────────────────────
     with gr.Tab("评估汇总"):
-        gr.Markdown("### 历次评估结果汇总", elem_classes=["prose"])
-        ev_refresh_btn = gr.Button("刷新")
+        gr.Markdown("### 历次评估结果", elem_classes=["prose"])
+        ev_refresh_btn = gr.Button("刷新评估记录")
         ev_table = gr.Dataframe(
             headers=[
                 "评估目录", "图像数", "通过率", "均分", "BRISQUE",
@@ -960,6 +933,25 @@ with gr.Blocks(title="乳腺钼靶扩散生成系统") as demo:
         )
         ev_refresh_btn.click(fn=_review_rows, inputs=[], outputs=[ev_table])
 
+        gr.Markdown("### 调参历史", elem_classes=["prose"])
+        hist_refresh_btn = gr.Button("刷新调参记录")
+        hist_table = gr.Dataframe(
+            headers=[
+                "轮次", "时间", "来源标签",
+                "通过率", "严格通过率", "均分", "BRISQUE",
+                "strength", "guidance", "steps",
+                "备注",
+            ],
+            value=_param_history_rows(),
+            interactive=False,
+        )
+        hist_refresh_btn.click(fn=refresh_param_history, inputs=[], outputs=[hist_table])
+
+        gr.Markdown("#### 最新顾问建议（LATEST_NEXT_RUN.json）", elem_classes=["prose"])
+        hist_load_btn = gr.Button("加载最新建议")
+        hist_latest_out = gr.Textbox(label="建议内容", lines=10, elem_classes=["log-box"])
+        hist_load_btn.click(fn=load_latest_next_run_into_tuning, inputs=[], outputs=[hist_latest_out])
+
     # 精选导出默认加载首个批次
     _init_batch = _init_value or ""
     demo.load(
@@ -967,11 +959,9 @@ with gr.Blocks(title="乳腺钼靶扩散生成系统") as demo:
         inputs=[],
         outputs=[curated_preview, curated_checklist],
     )
-    # 画廊默认加载最新批次
     demo.load(
-        fn=lambda: refresh_gallery(None, "浏览全部"),
-        inputs=[],
-        outputs=[gal_batch, gal_gallery],
+        fn=lambda: (gr.update(choices=_batch_choices(), value=_batch_choices()[0] if _batch_choices() else None), _param_history_rows()),
+        outputs=[gal_batch, hist_table],
     )
 
 

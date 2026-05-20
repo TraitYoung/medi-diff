@@ -28,6 +28,7 @@ import csv
 import json
 import os
 import random
+import sys
 import tempfile
 from collections import Counter
 from multiprocessing import Pool, cpu_count
@@ -116,6 +117,7 @@ except Exception:
 # Module-level globals
 # ---------------------------------------------------------------------------
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT))
 DEFAULT_IMAGES_DIR = ROOT / 'outputs/generated/毕业论文_生成图像'
 DEFAULT_GROUP_WEIGHTS = {
     'A': 0.2,
@@ -308,54 +310,17 @@ def parse_args():
                    help='若提供且存在同名源图，则计算乳腺掩膜 IoU 并入 semantic_score。')
     p.add_argument('--modality-device', type=str, default='cpu',
                    help='模态分类器设备：cpu 或 cuda（默认 cpu，单张 batch=1）。')
-    p.add_argument('--eval-profile', choices=('full', 'patch'), default='full',
-                   help='评估画像：full=全幅 FFDM，默认把皮肤线/圆环/接缝作为语义降级而非一票否决；patch=patch 生成图，保留更严格 hard veto。')
     p.add_argument('--strict-stat-veto', action=argparse.BooleanOptionalAction, default=False,
                    help='是否让旧统计 ok=False 直接参与最终 ok。默认关，避免全幅真实图被 BRISQUE/BANDING 批量误杀。')
     return p.parse_args()
 
 
-# ---------------------------------------------------------------------------
-# Image helpers
-# ---------------------------------------------------------------------------
-def is_image(path):
-    return path.suffix.lower() in frozenset({'.bmp', '.webp', '.jpg', '.png', '.jpeg'})
-
-
-def resize_long_side(gray, long_side):
-    """把灰度图按长边等比缩放到 long_side。<=0 或比原图大则原样返回。
-    FFT/卷积是平方级开销，缩一下对真实基线是 6-30x 提速。
-    """
-    if long_side is None or long_side <= 0:
-        return gray
-    h, w = gray.shape[:2]
-    m = max(h, w)
-    if m <= long_side:
-        return gray
-    scale = long_side / float(m)
-    nh = max(16, int(round(h * scale)))
-    nw = max(16, int(round(w * scale)))
-    return cv2.resize(gray, (nw, nh), interpolation=cv2.INTER_AREA)
-
-
-def largest_component(binary):
-    n, labels, stats, _ = cv2.connectedComponentsWithStats(binary, connectivity=8)
-    if n <= 1:
-        return np.zeros_like(binary, dtype=np.uint8)
-    idx = int(np.argmax(stats[1:, cv2.CC_STAT_AREA])) + 1
-    return (labels == idx).astype(np.uint8) * 255
-
-
-def build_mask(gray):
-    blur = cv2.GaussianBlur(gray, (5, 5), 0)
-    _, th = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    if np.count_nonzero(th) > th.size * 0.8:
-        th = cv2.bitwise_not(th)
-    k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
-    th = cv2.morphologyEx(th, cv2.MORPH_OPEN, k, iterations=1)
-    th = cv2.morphologyEx(th, cv2.MORPH_CLOSE, k, iterations=2)
-    return largest_component(th)
-
+from scripts.core.image_utils import (
+    build_mask,
+    is_image,
+    largest_component,
+    resize_long_side,
+)
 
 # ---------------------------------------------------------------------------
 # Distance / shape helpers
@@ -1139,7 +1104,7 @@ def _baseline_worker(args_tuple):
         if gray is None:
             return None
         if long_side and long_side > 0:
-            gray = resize_long_side(gray, long_side)
+            gray = resize_long_side(gray, long_side, only_downscale=True, min_side=16)
         m = extract_metrics(gray)
         if m.get('bright_spots', 999) >= 999:
             return None
@@ -1176,7 +1141,7 @@ def _review_worker(args_tuple):
         if gray is None:
             return None
         if long_side and long_side > 0:
-            gray = resize_long_side(gray, long_side)
+            gray = resize_long_side(gray, long_side, only_downscale=True, min_side=16)
         m = extract_metrics(gray)
         return m
     except Exception:
@@ -1917,7 +1882,6 @@ def run_stage1_hard_funnel(gray, args, ref=None, modality_checker=None, radiomic
     veto_reasons = []
     soft_reasons = []
     mask = build_mask(gray)
-    eval_profile = str(getattr(args, 'eval_profile', 'full'))
     p_mammo = None
 
     # Modality check
@@ -1931,14 +1895,11 @@ def run_stage1_hard_funnel(gray, args, ref=None, modality_checker=None, radiomic
     band = _mask_ratio_p5_p95_from_ref(ref)
     an = anatomy_structure_check(gray, mask, band)
     if an.veto:
-        if eval_profile == 'full':
-            for r in an.veto_reasons:
-                if r == 'CENTER_OVEREXPOSED':
-                    veto_reasons.append(r)
-                else:
-                    soft_reasons.append(r)
-        else:
-            veto_reasons.extend(an.veto_reasons)
+        for r in an.veto_reasons:
+            if r == 'CENTER_OVEREXPOSED':
+                veto_reasons.append(r)
+            else:
+                soft_reasons.append(r)
 
     # Seam check
     patch_size = int(getattr(args, 'patch_size_eval', 640)) or 640
@@ -1947,10 +1908,7 @@ def run_stage1_hard_funnel(gray, args, ref=None, modality_checker=None, radiomic
         enabled=bool(getattr(args, 'enable_seam_check', True)),
     )
     if seam_veto:
-        if eval_profile == 'full':
-            soft_reasons.append('GRID_SEAM')
-        else:
-            veto_reasons.append('GRID_SEAM')
+        soft_reasons.append('GRID_SEAM')
 
     # Radiomics
     vec = extract_radiomics_vector(gray, mask)
@@ -2006,15 +1964,11 @@ def compute_semantic_tier_and_final(funnel, quality_score, iou, args):
     p = funnel.get('modality_confidence')
     rad_s_val = funnel.get('radiomics_score', 0.5)
     rad_s = float(rad_s_val) if rad_s_val else 0.5
-    eval_profile = str(getattr(args, 'eval_profile', 'full'))
     norm_q = float(np.clip(quality_score / 100, 0, 1))
 
     if p is None and funnel.get('radiomics_distance') is None:
-        # No modality model, no radiomics: use profile fallback
-        if eval_profile == 'full':
-            semantic = 0.55 + 0.45 * norm_q
-        else:
-            semantic = 0.5 + 0.3 * norm_q
+        # No modality model, no radiomics: use quality-only fallback
+        semantic = 0.55 + 0.45 * norm_q
     else:
         p_use = 0.72 if p is None else float(p)
         if iou is None:
@@ -2027,7 +1981,7 @@ def compute_semantic_tier_and_final(funnel, quality_score, iou, args):
         'MASK_AREA_OUT_OF_DIST': 0.08,
         'SKIN_LINE_MISSING': 0.07,
         'CLOSED_RING_ARTIFACT': 0.12,
-        'GRID_SEAM': 0.05 if eval_profile == 'full' else 0.12,
+        'GRID_SEAM': 0.05,
     }
     for r in set(funnel.get('soft_reasons') or []):
         semantic -= penalty_map.get(str(r), 0)
@@ -2289,7 +2243,7 @@ def main():
                     rows.append(fail_row(path_str))
                     continue
                 if args.resize_long_side and args.resize_long_side > 0:
-                    gray = resize_long_side(gray, args.resize_long_side)
+                    gray = resize_long_side(gray, args.resize_long_side, only_downscale=True, min_side=16)
                 m = extract_metrics(gray)
                 metrics_map[path_str] = m
             except Exception:

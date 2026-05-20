@@ -27,10 +27,7 @@ GENERATED_DIR   = ROOT / "outputs/generated"
 EVAL_DIR        = ROOT / "outputs/eval"
 REVIEWS_DIR     = ROOT / "outputs/reviews"
 REPORT_DIR      = ROOT / "outputs/reports"
-# 主线：SD1.5 + LoRA（优先 v4 标签清洗后权重，否则退回 v3 retrain）
-_v4_final = ROOT / "outputs/lora/mammo_sd15_v4_clean/final_lora"
-_v3_ck500 = ROOT / "outputs/lora/mammo_sd15_v3_retrain_20260502_1723/checkpoint-500"
-DEFAULT_LORA = _v4_final if (_v4_final / "adapter_model.safetensors").is_file() else _v3_ck500
+DEFAULT_LORA = ROOT / "outputs/lora/mammo_sd15_v6_allMLO/final_lora"
 _mc_v2 = ROOT / "datasets/CBIS_CLEAN_V2/metadata_clean.csv"
 _mc_v1 = ROOT / "datasets/CBIS_CLEAN/metadata_clean.csv"
 METADATA_CSV = _mc_v2 if _mc_v2.is_file() else _mc_v1
@@ -67,13 +64,12 @@ class GenerateSD15Request(BaseModel):
     num_images: int = Field(default=6, ge=1, le=50, description="生成张数")
     seed: int = Field(default=2026, description="随机种子")
     num_steps: int = Field(default=50, ge=10, le=80, description="扩散推理步数")
-    strength: float = Field(default=0.42, ge=0.05, le=0.80, description="img2img 重绘强度")
-    guidance_scale: float = Field(default=8.5, ge=1.0, le=12.0, description="CFG 强度")
+    strength: float = Field(default=0.44, ge=0.05, le=0.80, description="img2img 重绘强度")
+    guidance_scale: float = Field(default=7.5, ge=1.0, le=12.0, description="CFG 强度")
     lora_path: str = Field(default=str(DEFAULT_LORA), description="LoRA 权重目录")
     output_subdir_prefix: str = Field(default="api_sd15", min_length=1, max_length=80)
     filter_view: str = Field(default="MLO", description="体位筛选：MLO/CC/空=不限")
-    filter_density: str = Field(default="dense", description="密度筛选：dense/scattered/…/空=不限")
-    eval_profile: str = Field(default="full", description="评审档位：full/patch")
+    filter_density: str = Field(default="scattered", description="密度筛选：scattered/dense/…/空=不限")
 
 
 class GenerateRequest(BaseModel):

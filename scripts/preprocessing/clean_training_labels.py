@@ -29,6 +29,7 @@ from PIL import Image
 from tqdm import tqdm
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT))
 
 JPEG_ROOT_CANDIDATES = [
     ROOT / "datasets" / "controls",
@@ -37,17 +38,10 @@ JPEG_ROOT_CANDIDATES = [
 ]
 MASK_ROOT = ROOT / "datasets" / "breast_masks"
 
+from scripts.core.image_utils import resize_long_side
+
 
 # ─────────────────────────────── 图像工具 ───────────────────────────────────
-
-def resize_long_side(gray: np.ndarray, long_side: int = 1024) -> np.ndarray:
-    h, w = gray.shape[:2]
-    scale = long_side / max(h, w)
-    if abs(scale - 1.0) < 0.01:
-        return gray
-    nh, nw = int(round(h * scale)), int(round(w * scale))
-    return cv2.resize(gray, (nw, nh), interpolation=cv2.INTER_AREA)
-
 
 def align_mask(mask1024: np.ndarray, target_h: int, target_w: int) -> np.ndarray:
     """把 1024×1024 的 letterbox mask 裁剪/缩放到 (target_h, target_w)。
@@ -180,7 +174,7 @@ def process_one(row: dict, args: argparse.Namespace) -> Optional[dict]:
 
     # resize
     if args.long_side > 0:
-        gray = resize_long_side(gray, args.long_side)
+        gray = resize_long_side(gray, args.long_side, up_interp=cv2.INTER_AREA, eps=0.01)
 
     # 读掩码并对齐
     mask1024 = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)

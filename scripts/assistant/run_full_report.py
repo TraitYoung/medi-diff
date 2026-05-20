@@ -50,7 +50,6 @@ def main() -> None:
     # --overlap-ratio removed (full-image only)
     p.add_argument("--fullimage-output-long-side", type=int, default=2048)
     # Postprocess and source-quality-sort flags archived
-    p.add_argument("--eval-profile", type=str, default="full")
     p.add_argument("--real-images-dir", type=str, default="")
     p.add_argument("--output-base", type=str,
                    default="outputs/generated/毕业论文_生成图像")
@@ -80,7 +79,6 @@ def main() -> None:
             "--mode", args.mode,
             "--filter-view", args.filter_view,
             "--filter-density", args.filter_density,
-            "--eval-profile", args.eval_profile,
             "--output-base", args.output_base,
         ])
         # Apply parameter overrides from JSON
@@ -108,7 +106,6 @@ def main() -> None:
             "--guidance-scale", str(args.guidance_scale),
             "--num-steps", str(args.num_steps),
             "--fullimage-output-long-side", str(args.fullimage_output_long_side),
-            "--eval-profile", args.eval_profile,
             "--output-base", args.output_base,
         ])
         # Postprocess and source-quality-sort flags archived

@@ -7,7 +7,7 @@ Legacy fallback: patch-overlap img2img with global guide + latent smooth field.
 Usage:
     python3 scripts/generation/run_mammo_sd15.py \
         --base-model-local hf_cache/sd15 \
-        --lora-path outputs/lora/mammo_sd15_v4_clean/final_lora \
+        --lora-path outputs/lora/mammo_sd15_v6_allMLO/final_lora \
         --metadata-csv datasets/CBIS_CLEAN_V2/metadata_clean.csv \
         --filter-view MLO --filter-density scattered \
         --num-images 6 --seed 2026 \
@@ -38,29 +38,8 @@ sys.path.insert(0, str(ROOT))
 
 logger = logging.getLogger(__name__)
 
-# ── Utility functions (imported by scripts/core/ modules) ───────────────────
-
-def resize_long_side_gray(gray: np.ndarray, long_side: int) -> np.ndarray:
-    """Resize so long side == long_side, keeping aspect ratio. long_side ≤ 0 means no-op."""
-    if long_side <= 0:
-        return gray
-    h, w = gray.shape
-    cur_long = max(h, w)
-    if cur_long == long_side:
-        return gray
-    scale = long_side / cur_long
-    new_w, new_h = int(round(w * scale)), int(round(h * scale))
-    interp = cv2.INTER_LANCZOS4 if scale > 1 else cv2.INTER_AREA
-    return cv2.resize(gray, (new_w, new_h), interpolation=interp)
-
-
-def enhance_input_contrast(gray: np.ndarray, clahe_clip: float = 0.8,
-                           clahe_grid: int = 8) -> np.ndarray:
-    """Apply CLAHE if median < 40 (dark images)."""
-    if np.median(gray) >= 40:
-        return gray
-    clahe = cv2.createCLAHE(clipLimit=clahe_clip, tileGridSize=(clahe_grid, clahe_grid))
-    return clahe.apply(gray)
+from scripts.core.image_utils import resize_long_side as resize_long_side_gray
+from scripts.core.image_utils import enhance_input_contrast
 
 
 def _detect_metal_markers(gray: np.ndarray, min_radius: int = 4,
@@ -146,7 +125,14 @@ def _has_source_artifact_burden(
 
 
 def _main_tissue_mask(gray: np.ndarray) -> np.ndarray:
-    """Build a coarse mask for the main breast body."""
+    """Build a coarse mask for the main breast body.
+
+    Uses Otsu*0.5 + CLOSE + largest contour — intentionally coarser than
+    ``scripts.core.image_utils.build_mask`` (which uses full Otsu + OPEN +
+    CLOSE + connectedComponentsWithStats).  The generation pipeline needs
+    wider tissue capture for lesion detection; evaluation uses the more
+    precise build_mask.  Do not merge them blindly.
+    """
     if gray.ndim == 3:
         gray = cv2.cvtColor(gray, cv2.COLOR_BGR2GRAY)
     otsu_v, _ = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)

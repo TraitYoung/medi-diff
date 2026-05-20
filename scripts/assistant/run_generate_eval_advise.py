@@ -12,7 +12,7 @@
         --filter-view MLO --filter-density dense \
         --num-images 6 --tag-prefix auto \
         --mode full-image --fullimage-output-long-side 2048 \
-        --eval-profile full --enable-seam-check
+        --enable-seam-check
 """
 from __future__ import annotations
 
@@ -76,7 +76,6 @@ def main() -> None:
                    dest="source_quality_sort")
 
     # Evaluation
-    p.add_argument("--eval-profile", type=str, default="full")
     p.add_argument("--enable-seam-check", action="store_true", default=False)
     p.add_argument("--no-auto-calibrate", action="store_true", default=False)
     p.add_argument("--real-images-dir", type=str, default="")
@@ -144,7 +143,6 @@ def main() -> None:
             "--images-dir", str(gen_dir),
             "--output-dir", str(eval_dir),
             "--no-recursive",
-            "--eval-profile", args.eval_profile,
         ]
         if args.enable_seam_check:
             eval_cmd.append("--enable-seam-check")
@@ -235,6 +233,7 @@ def main() -> None:
                     source_tag=tag_prefix,
                     source_seed=args.source_seed,
                     source_quality_sort=args.source_quality_sort,
+                    gen_dir=gen_dir,
                 )
 
     print("\nDone.")

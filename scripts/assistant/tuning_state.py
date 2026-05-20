@@ -15,6 +15,8 @@ from pathlib import Path
 from typing import Any
 
 LATEST_NEXT_RUN_FILE = "LATEST_NEXT_RUN.json"
+PARAM_HISTORY_FILE = "PARAM_HISTORY.json"
+_MAX_HISTORY_ENTRIES = 5
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -41,9 +43,12 @@ def _read_optional_dict(path: Path) -> dict[str, Any]:
         return {}
 
 
-def _infer_run_params(eval_dir: Path, summary: dict[str, Any]) -> dict[str, Any]:
-    """Read run_params.json from eval dir first, then generated images dir."""
-    paths = [eval_dir / "run_params.json"]
+def _infer_run_params(eval_dir: Path, summary: dict[str, Any], *, gen_dir: Path | None = None) -> dict[str, Any]:
+    """Read run_params.json from gen_dir, eval dir, or summary images_dir."""
+    paths: list[Path] = []
+    if gen_dir is not None:
+        paths.append(gen_dir / "run_params.json")
+    paths.append(eval_dir / "run_params.json")
     images_dir = str(summary.get("images_dir") or "").strip()
     if images_dir:
         paths.append(Path(images_dir) / "run_params.json")
@@ -87,6 +92,53 @@ def write_latest_tuning_state(report_base: Path, state: dict[str, Any]) -> Path:
     return path
 
 
+def append_param_history(
+    report_base: Path,
+    *,
+    source_tag: str,
+    parameters: dict[str, Any],
+    metrics: dict[str, Any],
+) -> Path:
+    """Append an entry to PARAM_HISTORY.json, keeping the last N entries."""
+    report_base.mkdir(parents=True, exist_ok=True)
+    hist_path = report_base / PARAM_HISTORY_FILE
+    entries: list[dict[str, Any]] = []
+    if hist_path.is_file():
+        try:
+            entries = json.loads(hist_path.read_text(encoding="utf-8"))
+            if not isinstance(entries, list):
+                entries = []
+        except (json.JSONDecodeError, OSError):
+            entries = []
+    entry = {
+        "index": len(entries) + 1,
+        "recorded_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "source_tag": source_tag,
+        "metrics": {
+            "pass_rate": metrics.get("pass_rate"),
+            "mean_total_score": metrics.get("mean_total_score"),
+            "mean_brisque": metrics.get("mean_brisque"),
+            "strict_pass_rate": metrics.get("strict_pass_rate"),
+            "violation_rates_top6": dict(
+                sorted(
+                    (metrics.get("violation_rates") or {}).items(),
+                    key=lambda x: -x[1],
+                )[:6]
+            ),
+        },
+        "parameters": parameters,
+    }
+    entries.append(entry)
+    entries = entries[-_MAX_HISTORY_ENTRIES:]
+    for i, e in enumerate(entries, 1):
+        e["index"] = i
+    hist_path.write_text(
+        json.dumps(entries, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    return hist_path
+
+
 def build_latest_tuning_state(
     eval_dir: Path,
     report_base: Path,
@@ -95,6 +147,7 @@ def build_latest_tuning_state(
     source_seed: int | None = None,
     source_quality_sort: bool | None = None,
     eval_mode: str | None = None,
+    gen_dir: Path | None = None,
 ) -> dict[str, Any] | None:
     """Build a compatible latest tuning state from an evaluation directory.
 
@@ -105,12 +158,17 @@ def build_latest_tuning_state(
     eval_dir = eval_dir.resolve()
     report_base = report_base.resolve()
     next_run_path = eval_dir / "next_run_parameters.json"
-    if not next_run_path.is_file():
-        return None
 
-    params = _parameters_from_next_run(next_run_path)
     summary = _read_optional_dict(eval_dir / "summary.json")
-    run_params = _infer_run_params(eval_dir, summary)
+    run_params = _infer_run_params(eval_dir, summary, gen_dir=gen_dir)
+
+    if next_run_path.is_file():
+        params = _parameters_from_next_run(next_run_path)
+    elif run_params:
+        # Fallback: use the parameters that were actually used for this run
+        params = dict(run_params)
+    else:
+        return None
 
     inferred_source_seed = source_seed
     if inferred_source_seed is None and run_params.get("source_seed") is not None:
@@ -169,6 +227,7 @@ def sync_latest_tuning_state(
     source_seed: int | None = None,
     source_quality_sort: bool | None = None,
     eval_mode: str | None = None,
+    gen_dir: Path | None = None,
 ) -> Path | None:
     """Build and write latest tuning state; return ``None`` when no next-run JSON exists."""
     state = build_latest_tuning_state(
@@ -178,7 +237,22 @@ def sync_latest_tuning_state(
         source_seed=source_seed,
         source_quality_sort=source_quality_sort,
         eval_mode=eval_mode,
+        gen_dir=gen_dir,
     )
     if state is None:
         return None
+    # Also append to param history for the Gradio "调参历史" tab
+    summary = _read_optional_dict(eval_dir / "summary.json")
+    append_param_history(
+        report_base,
+        source_tag=source_tag or eval_dir.name,
+        parameters=state.get("parameters", {}),
+        metrics={
+            "pass_rate": summary.get("pass_rate"),
+            "mean_total_score": summary.get("mean_total_score"),
+            "mean_brisque": summary.get("mean_brisque"),
+            "strict_pass_rate": summary.get("strict_pass_rate"),
+            "violation_rates": summary.get("violation_rates"),
+        },
+    )
     return write_latest_tuning_state(report_base, state)

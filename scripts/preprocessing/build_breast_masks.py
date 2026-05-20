@@ -22,9 +22,9 @@ import numpy as np
 from PIL import Image
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT))
 
-sys.path.insert(0, str(ROOT / "scripts/evaluation"))
-from review_generated_images import build_mask  # noqa: E402
+from scripts.core.image_utils import build_mask
 
 
 def extract_breast_mask(gray: np.ndarray) -> np.ndarray:

@@ -15,7 +15,7 @@ Usage:
       --output-dir    outputs/lora/mammo_sd15_v1 \
       --max-train-steps 2000 \
       --learning-rate 1e-4 \
-      --rank          16 \
+      --rank          32 \
       --batch-size    4 \
       --seed          42
 """
@@ -239,7 +239,7 @@ def parse_args():
     parser.add_argument("--output-dir", default="outputs/lora/mammo_sd15_v1")
     parser.add_argument("--max-train-steps", type=int, default=2000)
     parser.add_argument("--learning-rate", type=float, default=1e-4)
-    parser.add_argument("--rank", type=int, default=16)
+    parser.add_argument("--rank", type=int, default=32)
     parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--resolution", type=int, default=512)
     parser.add_argument("--gradient-accumulation", type=int, default=2)
