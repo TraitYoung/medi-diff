@@ -40,3 +40,8 @@ hf_cache/
 # OS
 .DS_Store
 Thumbs.db
+
+# 毕业设计模板与说明书（学校文件，不提交到 GitHub）
+docs/附件6：*模版.docx
+docs/附件6：*模板.docx
+docs/毕业设计说明书*.docx
