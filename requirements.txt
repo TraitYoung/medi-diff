@@ -1,20 +1,24 @@
-accelerate
-diffusers
-fastapi
-gradio
-numpy
-opencv-python
-pandas
-peft
-pillow
-pydantic
-scipy
-torch
-torchvision
-tqdm
-transformers
+# MammoGen runtime (GPU machine). Prefer: pip install -e ".[full]"
+# Pins are lower bounds validated against the SD1.5 + LoRA mainline.
+
+accelerate>=0.28.0
+diffusers>=0.27.0
+fastapi>=0.110.0
+gradio>=4.0.0
+numpy>=1.24.0
+opencv-python>=4.8.0
+pandas>=2.0.0
+peft>=0.10.0
+pillow>=10.0.0
+pydantic>=2.0.0
+scipy>=1.11.0
+torch>=2.1.0
+torchvision>=0.16.0
+tqdm>=4.66.0
+transformers>=4.38.0
 torch-fidelity>=0.3.4
 pytorch-fid>=0.3.0
 piq>=0.7.0
-uvicorn
-xformers
+uvicorn>=0.27.0
+# Optional CUDA memory saver; skip on CPU-only hosts if install fails
+xformers>=0.0.23; platform_system != "Darwin"

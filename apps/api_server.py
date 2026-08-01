@@ -40,7 +40,7 @@ REAL_IMAGES_DIR = ROOT / "datasets/jpeg"
 app = FastAPI(
     title="Mammography Diffusion Generation API",
     description=(
-        "乳腺钼靶扩散生成系统 REST API（毕业设计）。\n\n"
+        "MammoGen REST API — mammography diffusion generation.\n\n"
         "**主线**：`POST /generate/sd15` — SD1.5 + LoRA full-image img2img。\n"
         "**归档**：`POST /generate/sdxl` — SDXL Inpaint（历史路线，仍可复现）。\n"
         "异步任务：提交后用 `GET /jobs/{id}` 轮询状态；完成后用 `GET /batches` 查看结果。"
@@ -328,7 +328,7 @@ def list_batches(limit: int = 20) -> list[dict]:
 
 @app.get("/batches/{batch_name}", summary="查询指定批次详情")
 def get_batch(batch_name: str) -> dict:
-    path = _resolve_under_root(f"outputs/generated/毕业论文_生成图像/{batch_name}", must_exist=True)
+    path = _resolve_under_root(f"outputs/generated/samples/{batch_name}", must_exist=True)
     if not path.is_dir():
         raise HTTPException(status_code=404, detail="不是一个有效的批次目录")
     return _batch_info(path)
@@ -337,7 +337,7 @@ def get_batch(batch_name: str) -> dict:
 @app.get("/batches/{batch_name}/images/{filename}", summary="获取批次中的单张图像文件")
 def get_image(batch_name: str, filename: str) -> FileResponse:
     img_path = _resolve_under_root(
-        f"outputs/generated/毕业论文_生成图像/{batch_name}/{filename}", must_exist=True
+        f"outputs/generated/samples/{batch_name}/{filename}", must_exist=True
     )
     if img_path.suffix.lower() not in {".png", ".jpg", ".jpeg", ".webp"}:
         raise HTTPException(status_code=400, detail="不支持的文件类型")

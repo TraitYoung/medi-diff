@@ -1,0 +1,1 @@
+"""MammoGen scripts package."""

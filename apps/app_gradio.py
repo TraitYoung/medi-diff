@@ -1,4 +1,4 @@
-"""Gradio 界面：乳腺钼靶扩散生成系统答辩/日常主入口。
+"""Gradio 界面：MammoGen 乳腺钼靶生成系统主入口。
 
 通过 subprocess 调用 scripts/ 下的管线脚本，与 FastAPI 服务逻辑独立。
 """
@@ -18,7 +18,7 @@ import gradio as gr
 logger = logging.getLogger(__name__)
 
 ROOT = Path(__file__).resolve().parent.parent
-GENERATED_DIR = ROOT / "outputs/generated/毕业论文_生成图像"
+GENERATED_DIR = ROOT / "outputs/generated/samples"
 EVAL_DIR = ROOT / "outputs/eval"
 REPORT_DIR = ROOT / "outputs/reports"
 DEFAULT_MODEL = ROOT / "hf_cache/sd15"
@@ -46,7 +46,7 @@ def _run(command: list[str]) -> str:
 
 
 def _batch_dirs() -> list[Path]:
-    """返回毕业论文生成目录下所有批次，按修改时间倒序。"""
+    """返回生成样本目录下所有批次，按修改时间倒序。"""
     if not GENERATED_DIR.exists():
         return []
     image_exts = {".png", ".jpg", ".jpeg"}

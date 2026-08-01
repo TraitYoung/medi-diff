@@ -1,358 +1,231 @@
-# 基于扩散模型的乳腺钼靶图像生成系统
+# MammoGen
 
-> 山东建筑大学计算机科学与技术学院 · 本科毕业设计  
-> 课题：基于扩散模型的乳腺钼靶图像生成系统设计与实现
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-green.svg)](requirements.txt)
+[![GitHub](https://img.shields.io/badge/GitHub-TraitYoung%2Fmedi--diff-181717?logo=github)](https://github.com/TraitYoung/medi-diff)
+[![CI](https://github.com/TraitYoung/medi-diff/actions/workflows/ci.yml/badge.svg)](https://github.com/TraitYoung/medi-diff/actions/workflows/ci.yml)
+[![HF](https://img.shields.io/badge/Hugging%20Face-TraitYoung-yellow?logo=huggingface)](https://huggingface.co/TraitYoung)
 
----
+**Synthetic mammography generation with automated quality control.**
 
-## 目录
+**MammoGen** — 面向乳腺钼靶（FFDM）图像的扩散模型生成与自动化质控开源工具链。  
+从 CBIS-DDSM 数据清洗、SD1.5+LoRA 训练，到 16 维规则评估与可选 LLM 报告，一条命令跑通。
 
-| 章节 | 内容 |
-|------|------|
-| [系统简介](#系统简介) | 能力与模块总览 |
-| [快速开始](#快速开始) | 环境、可选 NLP API、流水线、界面与 API |
-| [目录结构](#目录结构) | 仓库文件树导读 |
-| [监控与日志](#监控与日志) | 健康检查、步骤耗时、日志位置 |
-| [主要参数说明](#主要参数说明) | 生成侧推荐区间 |
-| [评审指标说明](#评审指标说明) | 违规类型与分组 |
-| [容错设计](#容错设计) | 边界情况处理、异常降级策略 |
-| [归档路线说明](#归档路线说明) | 历史实验脚本 |
-| [论文展示建议](#论文展示建议) | 定稿展示流程 |
+> **Not for clinical diagnosis.** Research / education / synthetic-data tooling only.  
+> **不用于临床诊断。** 仅供研究、教学与合成数据实验。
 
-### 配套文档（`docs/`）
-
-| 文件 | 说明 |
-|------|------|
-| [用户操作手册](docs/developer/用户操作手册.md) | 安装、界面、FAQ |
-| [apps 入口说明](apps/README.md) | `start.sh`、Gradio vs FastAPI、`--output-base` 约定 |
-| [评价体系说明](docs/评价体系说明.md) | **双轨指标**：域内规则体系与 FID/PRC/sFID 等通用指标的分工 |
-| [API 接口文档](docs/developer/API接口文档.md) | REST、`JobRecord`、`curl` 示例 |
-| [项目结构与目录职责](docs/developer/项目结构说明.md) | 路径职责、归档与迁移记录 |
-| [开发日志](docs/developer/开发日志.md) | 按日期的工程与实验纪要 |
-| [项目交付检查清单](docs/developer/项目交付检查清单.md) | 任务书与交付核对 |
-| [评估标准说明（分项公式）](docs/评估标准说明.md) | 16 维分项与校准 |
-| [模拟专家评分表](docs/developer/模拟专家评分表.md) | 主观评分模板 |
-| [容错设计](docs/developer/容错设计.md) | **工程可靠性**：边界情况处理、异常降级策略、Pydantic 校验拦截 |
-| [开发者自用备忘](docs/developer/README.md) | **个人维护**：协作心法、指标体系怎么记、常见坑（非答辩口径） |
+仓库 slug：[`medi-diff`](https://github.com/TraitYoung/medi-diff) · 品牌名：**MammoGen**
 
 ---
 
-## 系统简介
+## Why this project
 
-本系统以 **Stable Diffusion 1.5 + 自训 LoRA（CBIS-DDSM）** 为核心：答辩版前端默认 **全图单次 img2img（`--mode full-image`）**，无 Patch 网格接缝；Patch-Overlap 仅保留为 CLI 研究回退路线。
+Most open mammography / medical diffusion repos stop at “train a LoRA and dump images”. MammoGen ships a **closed loop**:
 
-### 核心能力
+| Pillar | What you get |
+|--------|----------------|
+| **Data** | CBIS-DDSM cleaning, breast masks, burn-in label scrubbing |
+| **Generation** | SD1.5 + LoRA, default **full-image** img2img (no patch seams), reproducible `--source-seed` |
+| **Evaluation** | 16-dim rule scores + hard/soft gates, plus optional FID/sFID — no GPT-4V required for QC |
 
-| 模块 | 说明 |
-|------|------|
-| **数据预处理** | CBIS-DDSM JPEG 筛选、乳腺区域 mask 提取、密度/体位/侧别标签结构化 |
-| **条件生成** | SD1.5 + LoRA；**默认全图单次推理**（`fullimage_generate`）；CLI 保留 Patch overlap + 金字塔融合等研究参数 |
-| **质量评审** | **域内**：16 维规则分项 + **`hard_tags`** / **`soft_reasons`**（如 **`SKIN_LINE_MISSING`**、**`GRID_SEAM`** 在 `eval_profile=full` 多为软惩罚，不参与硬否决）；**`--real-images-dir`** 驱动真实分布校准与学术指标。**通用**：FID/KID、P/R、sFID |
-| **自动化报告（可选）** | `run_full_report.py` 等脚本可经由 `.env` 调用第三方 **文本 API**（默认 DeepSeek，可改用 Qwen）与 **DashScope Qwen‑VL** 看图，产出 Markdown 报告与下一轮参数的 JSON（实现见 `scripts/assistant/`） |
-| **前端界面** | Gradio：**「生成」**为单面板（预设 + 全图；密度默认 **scattered**；全图默认保存长边 **1024** 便于预览）；另有 **画廊 / 评估 / 一键流水线 / 调参历史** 等 |
-| **后端 API** | FastAPI RESTful API，支持异步任务队列 |
-
-### 主线数据、权重与推理默认
-
-- **硬件门槛**：推理需 **NVIDIA GPU（≥8GB 显存）**，推荐 RTX 3060 及以上。因硬件门槛不做线上部署，界面截图见 [`medi-diff-demonstration/`](medi-diff-demonstration/)。
-- **训练数据**：基于 [`sposso/CBIS-DDSM-DATASET`](https://github.com/sposso/CBIS-DDSM-DATASET)，经 JPEG 筛选、标签清洗、mask 提取后产出 `CBIS_CLEAN_V2/metadata_clean.csv`。预处理管线：`clean_cbis.py` → `build_breast_masks.py` → `clean_training_labels.py` → `generate_captions.py`。
-- **主线权重**：`outputs/lora/mammo_sd15_v6_allMLO/final_lora`（r=32，全 MLO 视图训练），由 `train_mammo_lora.py` + `prepare_lora_dataset_v5.py` 产出。
-- **默认推理**：`run_mammo_sd15.py` 默认 **全图模式**（`--mode full-image`），`strength=0.44`，`guidance_scale=7.5`，`num_steps=40`（DPM-Solver++）。源图经过形态预筛（`circularity≥0.30`，`convex_defect≤0.45`）。
-- **标签守护**：`--legacy-label-guard`（默认开）进行启发式标签清除 + 亮斑修补，配合 Qwen-VL 后验证。
-- **后处理、频域校正、源图质量排序**：已归档，主线不再使用。
+Honest baseline: strict `pass_rate` is often around **~50%**. Failure modes (banding, shape oddities) are first-class documentation, not hidden.
 
 ---
 
-## 快速开始
+## Architecture
 
-### 环境安装
+```mermaid
+flowchart LR
+  A[Clean CBIS-DDSM] --> B[Train LoRA]
+  B --> C[Full-image img2img]
+  C --> D[16-dim rule eval]
+  D --> E[Optional LLM report]
+```
+
+| Stage | Entry |
+|-------|--------|
+| Preprocess | `scripts/preprocessing/` (`clean_cbis` → masks → `CBIS_CLEAN_V2`) |
+| Train | `scripts/training/train_mammo_lora.py` |
+| Generate | `scripts/generation/run_mammo_sd15.py` |
+| Evaluate | `scripts/evaluation/review_generated_images.py` |
+| Report | `scripts/assistant/run_generate_eval_advise.py` |
+| UI / API | `bash apps/start.sh` → Gradio `:7860` + FastAPI `:8000` |
+
+---
+
+## Demo
+
+Inference needs a local **NVIDIA GPU (≥8GB)**. UI screenshots live in-repo; static HF Space packaging is under [`hf/mammo-gallery/`](hf/mammo-gallery/) (publish with `scripts/tools/publish_hf_assets.py`).
+
+| Screenshot | Tab |
+|------------|-----|
+| ![Generate](medi-diff-demonstration/图片%201.png) | Generate |
+| ![Gallery](medi-diff-demonstration/图片%202.png) | Gallery |
+| ![Source compare](medi-diff-demonstration/图片%203.png) | Real vs generated |
+| ![Pipeline](medi-diff-demonstration/图片%205.png) | One-click pipeline |
+| ![Eval](medi-diff-demonstration/图片%206.png) | Evaluation |
+
+| HF asset | ID | Status |
+|----------|-----|--------|
+| LoRA card + weights | [`TraitYoung/mammo-sd15-lora-v6`](https://huggingface.co/TraitYoung/mammo-sd15-lora-v6) | Card in repo; upload when local LoRA + `HF_TOKEN` ready |
+| Metadata | [`TraitYoung/cbis-clean-v2`](https://huggingface.co/datasets/TraitYoung/cbis-clean-v2) | Card in repo; CSV upload when local metadata ready |
+| Gallery Space | [`TraitYoung/mammo-gallery`](https://huggingface.co/spaces/TraitYoung/mammo-gallery) | Static Gradio pack ready (`hf/mammo-gallery`) |
+
+See [`hf/README.md`](hf/README.md).
+
+---
+
+## Quick start
+
+### 1. Install
 
 ```bash
+git clone https://github.com/TraitYoung/medi-diff.git
+cd medi-diff
+
+# Dev / CI (CPU): editable install + pytest/ruff
+pip install -r requirements-dev.txt
+
+# Full GPU runtime
 pip install -r requirements.txt
+# or: pip install -e ".[full]"
+
+cp .env.example .env   # optional: text / Qwen-VL API keys for advisor reports
 ```
 
-### 配置可选 API（`.env`）
+### 2. Place weights & data
 
-流水线脚本可通过第三方文本 API（DeepSeek > GLM > Qwen）和 DashScope Qwen-VL 生成分析报告。密钥放在 `.env`，勿提交仓库。
+| Asset | Local path | HF (after publish) |
+|-------|------------|--------------------|
+| SD1.5 snapshot | `hf_cache/sd15/` | base model hub id / local snapshot |
+| LoRA (r=32, all MLO) | `outputs/lora/mammo_sd15_v6_allMLO/final_lora/` | `TraitYoung/mammo-sd15-lora-v6` |
+| Clean metadata | `datasets/CBIS_CLEAN_V2/metadata_clean.csv` | `TraitYoung/cbis-clean-v2` |
+| Source JPEGs | paths in the CSV (often `datasets/jpeg/`) | obtain under CBIS-DDSM / TCIA terms |
 
 ```bash
-cp .env.example .env
-# 编辑 .env，至少配置一个文本 API key
-# 默认 --advisor-mode text_only（仅文本）；加 both 时调 Qwen-VL 看图
+# After you publish (needs HF_TOKEN + local assets):
+python3 scripts/tools/publish_hf_assets.py --all
+huggingface-cli download TraitYoung/mammo-sd15-lora-v6 \
+  --local-dir outputs/lora/mammo_sd15_v6_allMLO/final_lora
 ```
 
-### 一键全自动流水线（推荐入口）
+### 3. Run
 
 ```bash
-# 主入口：生成 6 张 MLO dense → 自动评审 → 文本/视觉分析报告 → FINAL_REPORT.md
+# UI + API
+bash apps/start.sh
+
+# Or one-shot CLI: generate → evaluate → advise
 python3 scripts/assistant/run_generate_eval_advise.py \
   --metadata-csv datasets/CBIS_CLEAN_V2/metadata_clean.csv \
   --filter-view MLO --filter-density dense \
   --num-images 6 --tag-prefix my_run
-
-# 便捷包装器（通过子进程调用 run_generate_eval_advise；默认生成模式为 full-image）
-python3 scripts/assistant/run_full_report.py \
-  --metadata-csv datasets/CBIS_CLEAN_V2/metadata_clean.csv \
-  --filter-view MLO --filter-density dense \
-  --num-images 6 --tag-prefix my_run
-
-# 查看调参历史
-python3 scripts/assistant/run_full_report.py --show-history
-
-# 基于最近一次 API 输出的参数 JSON 重跑下一轮
-python3 scripts/assistant/run_full_report.py --from-latest-tuning \
-  --metadata-csv datasets/CBIS_CLEAN_V2/metadata_clean.csv \
-  --filter-view MLO --filter-density dense
-
-# 回滚到历史第 2 条参数重跑
-python3 scripts/assistant/run_full_report.py --rollback 2 \
-  --metadata-csv datasets/CBIS_CLEAN_V2/metadata_clean.csv
 ```
 
-- **成本控制**：流水线默认 **`--advisor-mode text_only`**（仅调用文本接口）；需在报告中加入视觉分析时使用 **`--advisor-mode both`**（将调用 DashScope **Qwen‑VL**，费用与配额以云控制台为准）。
-- **`--compact-advisor`**：压缩报送 API 的历史与统计数据行数以降低单次调用上下文长度。
-- **`--no-qwen-vl`**：显式跳过多模态阶段。
-
-### 单独生成
-
-```bash
-# 主线：全图（默认）；保存长边 capped 便于 UI/评测内存（0=不缩放）
-python3 scripts/generation/run_mammo_sd15.py \
-  --base-model-local hf_cache/sd15 \
-  --lora-path outputs/lora/mammo_sd15_v4_clean/final_lora \
-  --metadata-csv datasets/CBIS_CLEAN_V2/metadata_clean.csv \
-  --filter-view MLO --filter-density scattered \
-  --num-images 6 --seed 2026 \
-  --mode full-image \
-  --fullimage-output-long-side 2048 \
-  --fullimage-min-short-side 384 \
-  --scheduler dpm --num-steps 50 \
-  --strength 0.36 --guidance-scale 6.5 \
-  --output-subdir-prefix demo_run
-
-# 研究回退：Patch 拼接（仅 CLI，Gradio 答辩版已隐藏）
-python3 scripts/generation/run_mammo_sd15.py \
-  --mode patch \
-  --base-model-local hf_cache/sd15 \
-  --lora-path outputs/lora/mammo_sd15_v4_clean/final_lora \
-  --metadata-csv datasets/CBIS_CLEAN_V2/metadata_clean.csv \
-  --filter-view MLO --filter-density dense \
-  --num-images 6 --seed 2026 \
-  --strength 0.47 --overlap-ratio 0.90 \
-  --scheduler dpm --num-steps 50 --patch-size 640 \
-  --output-subdir-prefix demo_patch
-```
-
-### 单独评审
-
-```bash
-# 不传 real-images-dir 则不做该路径下的域内分项基线校准与 FID 等 academic_metrics（若依赖未齐也会置空）
-python3 scripts/evaluation/review_generated_images.py \
-  --images-dir outputs/generated/demo_run_20260503_000000_000 \
-  --output-dir outputs/eval/demo_run \
-  --no-recursive --eval-profile full --enable-seam-check \
-  --real-images-dir datasets/jpeg
-```
-
-### 多轮对比表
-
-```bash
-python3 scripts/evaluation/compare_runs.py --runs-dir outputs/eval
-```
-
-### 一键启动 Gradio + FastAPI（推荐）
-
-在项目根目录执行：
-
-```bash
-bash apps/start.sh
-```
-
-| 服务 | 地址 | 说明 |
-|------|------|------|
-| **Gradio** | `http://127.0.0.1:7860` | 「生成」单页 + 画廊 / 流水线 / **调参历史**（回滚）等；详见 [`apps/README.md`](apps/README.md) |
-| **FastAPI** | `http://127.0.0.1:8000` | Swagger：`/docs`；健康检查：`GET /health` |
-
-停止：`bash apps/stop.sh` 或 Ctrl+C。开发热重载：`bash apps/start.sh --api-reload`。完整参数见 `bash apps/start.sh --help`。
-
-### 界面预览
-
-系统需 NVIDIA GPU 推理，不做线上部署。以下为本地运行界面截图：
-
-| 截图 | 说明 |
-|------|------|
-| ![生成面板](medi-diff-demonstration/图片%201.png) | 生成 Tab — 单面板：体位/密度筛选、数量、高级采样参数 |
-| ![画廊浏览](medi-diff-demonstration/图片%202.png) | 画廊 Tab — 浏览全部模式，4 列预览 + 文件名标签 |
-| ![源图对比](medi-diff-demonstration/图片%203.png) | 画廊 Tab — 源图对比模式，生成图/源图并排 |
-| ![精选导出](medi-diff-demonstration/图片%204.png) | 画廊 Tab — 精选导出：按评估排序、勾选、一键导出 |
-| ![一键流水线](medi-diff-demonstration/图片%205.png) | 一键流水线 Tab — 生成→评估→顾问报告全流程 |
-| ![评估](medi-diff-demonstration/图片%206.png) | 评估 Tab — 通过率/均分/BRISQUE/A-F 分项/排序预览 |
-| ![调参历史](medi-diff-demonstration/图片%207.png) | 调参历史 Tab — 最近 5 轮参数与指标回滚 |
-
-### 单独启动（调试）
-
-```bash
-# 仅 Gradio
-python3 apps/app_gradio.py --host 0.0.0.0 --port 7860
-
-# 仅 FastAPI（是否加 --reload 自行决定）
-uvicorn apps.api_server:app --host 0.0.0.0 --port 8000
-# 接口文档：http://127.0.0.1:8000/docs
-```
+Default sample output root: `outputs/generated/samples/`.  
+Smoke check (no GPU): `python3 scripts/tools/verify_ui_wiring.py`
 
 ---
 
-## 目录结构
+## Defaults (generation)
 
-| 目录 | 说明 |
-|------|------|
-| `apps/` | Gradio 前端（生成单面板 + Tab 拆分）+ FastAPI REST v2 + 启停脚本 |
-| `scripts/core/` | **共享核心库**：PipelineConfig、SDPipeline、后处理、标签守护、编排器 |
-| `scripts/generation/` | 主线生成（`run_mammo_sd15.py`）+ 归档路线（SDXL/ControlNet 等） |
-| `scripts/training/` | LoRA 训练（`train_lora_quick.py`）+ 数据集准备 |
-| `scripts/evaluation/` | 评审（域内规则 + FID/PRC/sFID）、多轮对比、消融 |
-| `scripts/preprocessing/` | CBIS-DDSM 清洗、mask 提取、burn-in 清除（CRAFT+LaMa） |
-| `scripts/postprocess/` | 频域后处理 CLI（核心在 `scripts/core/postprocess_pipeline.py`） |
-| `scripts/assistant/` | 全流程报告（可选 DeepSeek/Qwen 文本/VL 顾问） |
-| `scripts/tests/` | 含 `test_fullimage_output_size.py`（全图输出长边封顶）与 `run_ablation.py` 等 |
-| `docs/` | 任务书、开发日志、用户手册、API 文档、评价体系说明 |
-| `datasets/` | CBIS-DDSM JPEG + `CBIS_CLEAN_V2/metadata_clean.csv`（主线；训练数据集来源见 [`sposso/CBIS-DDSM-DATASET`](https://github.com/sposso/CBIS-DDSM-DATASET)） |
-| `outputs/` | 生成图、评审、LoRA 权重、报告、日志 |
-| `hf_cache/` | SD1.5 本地离线快照 |
-| `archive/` | 废案与旧备份（不参与主流程） |
+| Item | Value |
+|------|--------|
+| Mode | `full-image` (single-pass img2img) |
+| Strength / CFG / steps | `0.44` / `7.5` / `40` (DPM-Solver++) |
+| LoRA | `mammo_sd15_v6_allMLO` (r=32) |
+| Label guard | on by default (heuristic burn-in cleanup) |
+| Source pre-filter | circularity ≥ 0.30, convex_defect ≤ 0.45 |
 
-详细路径说明见 [`docs/developer/项目结构说明.md`](docs/developer/项目结构说明.md)。
+More parameters: see [`apps/README.md`](apps/README.md) and CLI `--help` on `run_mammo_sd15.py`.
 
 ---
 
-## 监控与日志
+## Evaluation (dual track)
 
-### 健康检查
+1. **In-domain rules** — groups A–F (16 dims), `hard_tags` / `soft_reasons`, BRISQUE, spectrum β → `ok` / `total_score` for filtering.  
+2. **Generic metrics** — FID/KID, Precision–Recall, sFID when `--real-images-dir` is set → `summary.json → academic_metrics`.
 
-FastAPI 提供 `GET /health` 端点，返回服务状态快照：
+Details: [`docs/评价体系说明.md`](docs/评价体系说明.md) · formulas: [`docs/评估标准说明.md`](docs/评估标准说明.md).
 
-```json
-{
-  "ok": true,
-  "uptime_seconds": 12345.6,
-  "root": "/path/to/medi-diff",
-  "gpu": {
-    "cuda_available": true,
-    "cuda_device_name": "NVIDIA RTX 4090",
-    "cuda_memory_allocated_gb": 3.5,
-    "cuda_memory_reserved_gb": 4.2
-  },
-  "memory": { "rss_mb": 1234.5, "vms_mb": 5678.9 },
-  "sd15_model_exists": true,
-  "sd15_lora_exists": true,
-  "metadata_csv_exists": true
+Tip: under `eval_profile=full`, tags like `GRID_SEAM` / `SKIN_LINE_MISSING` are often **soft** penalties. Prefer calibrated baselines that match your density filter; do not treat auto-calibrated `pass_rate=1.0` as ground truth.
+
+---
+
+## Repository layout
+
+| Path | Role |
+|------|------|
+| `apps/` | Gradio + FastAPI + start/stop |
+| `scripts/core/` | Shared libs (`GenParams`, label guard, image utils) |
+| `scripts/preprocessing/` | CBIS cleaning & masks |
+| `scripts/training/` | LoRA training |
+| `scripts/generation/` | Mainline `run_mammo_sd15.py` |
+| `scripts/evaluation/` | Rule eval + compare runs |
+| `scripts/assistant/` | Full pipeline + LLM advisor |
+| `docs/` | Guides & design notes |
+| `archive/` | Retired experiments (not on mainline) |
+| `datasets/`, `outputs/`, `hf_cache/` | Local data/weights (gitignored) |
+
+---
+
+## Docs
+
+| Doc | Topic |
+|-----|--------|
+| [用户操作手册](docs/developer/用户操作手册.md) | Install, UI, FAQ |
+| [apps README](apps/README.md) | Gradio vs API, output dirs |
+| [API 接口文档](docs/developer/API接口文档.md) | REST + curl |
+| [项目结构说明](docs/developer/项目结构说明.md) | Path responsibilities |
+| [容错设计](docs/developer/容错设计.md) | Degraded paths, validation |
+| [开发日志](docs/developer/开发日志.md) | Experiment journal |
+
+---
+
+## License & data attribution
+
+- **Code**: [MIT](LICENSE) © 2026 TraitYoung  
+- **Training data**: derived from [CBIS-DDSM](https://www.cancerimagingarchive.net/collection/cbis-ddsm/) via TCIA / community mirrors such as [`sposso/CBIS-DDSM-DATASET`](https://github.com/sposso/CBIS-DDSM-DATASET).  
+  Redistribute cleaned subsets only under the **original TCIA / CBIS-DDSM terms** (commonly CC BY–style with attribution). This repo does **not** relicense the images.  
+- **Base model**: Stable Diffusion 1.5 — follow its original license when redistributing weights.
+
+---
+
+## Citation
+
+```bibtex
+@software{mammogen2026,
+  title   = {MammoGen: Mammography Diffusion Generation with Automated QC},
+  author  = {TraitYoung},
+  year    = {2026},
+  url     = {https://github.com/TraitYoung/medi-diff},
+  note    = {Open-source toolchain; not for clinical use}
 }
 ```
 
-访问方式：`curl http://localhost:8000/health` 或浏览器打开 `http://localhost:8000/docs` → `/health`。
+---
 
-### 步骤耗时
+## FAQ
 
-生成脚本 `run_mammo_sd15.py` 在关键步骤打点，日志格式如下：
+**Q: Do I need an LLM API key?**  
+A: No for generate/eval. Keys in `.env` are only for optional advisor reports (`run_generate_eval_advise` / `run_full_report`).
 
-```
-2026-05-17 22:00:01 [INFO] Device: cuda  Mode: full-image
-2026-05-17 22:00:12 [INFO] Model+LoRA loaded in 11.2s
-2026-05-17 22:00:15 [INFO] Selected 24 candidate sources for 6 requested images (2.8s)
-2026-05-17 22:00:18 [INFO]   [1/24] 3.2s
-2026-05-17 22:00:21 [INFO]   [2/24] 2.9s
-...
-2026-05-17 22:01:30 [INFO] Done. 6 images → outputs/generated/... | total 89.3s (14.9s/img)
-```
+**Q: Where did `毕业论文_生成图像` go?**  
+A: Renamed to `outputs/generated/samples/`. Move old batches there if the gallery looks empty.
 
-### 请求日志
+**Q: Can I use patch-overlap generation?**  
+A: Full-image is the supported default. Historical patch routes live under `archive/` / git history for research replay.
 
-FastAPI 通过中间件记录每个 HTTP 请求的方法、路径、状态码和耗时：
-
-```
-2026-05-17 22:00:01 [INFO] GET /health → 200 0.002s
-2026-05-17 22:00:30 [INFO] POST /generate/sd15 → 200 0.005s
-2026-05-17 22:01:30 [INFO] Job a1b2c3d4e5f6 succeeded in 85.3s (rc=0)
-```
-
-### 日志位置
-
-| 服务 | 日志路径 |
-|------|---------|
-| Gradio | `/tmp/gradio_ui_7860.log`（`start.sh` 自动重定向） |
-| FastAPI | `/tmp/fastapi_8000.log`（`start.sh` 自动重定向） |
-| 生成脚本 | stdout/stderr，被父进程捕获 |
+**Q: Will there be a browser demo without a GPU?**  
+A: Planned HF Space gallery of pre-generated samples (`TraitYoung/mammo-gallery`), not live diffusion.
 
 ---
 
-## 主要参数说明
+## Roadmap
 
-| 参数 | 说明 | 推荐值 |
-|------|------|--------|
-| `--mode` | `full-image`（默认）单次整图 diffusion；`patch` 仅用于 CLI 研究回退 | full-image |
-| `--fullimage-long-side` | 推理前缩放目标的**长边**（8 对齐），且隐式不会超过 **1024** 推断安全顶 | 768 |
-| `--fullimage-min-short-side` | 高长宽比片保证短边不低于该值（设为 **0** 关闭） | 384 |
-| `--fullimage-output-long-side` | 保存 PNG **长边上界**（**0**=按原图源最大边）；Gradio 默认传 **1024**，论文留档可手动传 **2048** | CLI 默认 2048 |
-| `--max-source-aspect-ratio` | `filter_source_pool` 丢弃更极端比例的源 JPEG | 2.2 |
-| `--strength` | img2img；答辩版为保留胸大肌/IMF 轮廓下调 | 0.34–0.36 |
-| `--overlap-ratio` | Patch 重叠率；仅 CLI patch 模式使用，Gradio 不暴露 | **0.88–0.90** |
-| `--guidance-scale` | CFG 强度；过高易放大水墨纹理、白点和边缘伪影 | 6.2–6.5 |
-| `--global-guide-blend` | 全局引导混合比；**超过 0.70 极易导致 TOO_UNIFORM/BANDING** | 0.30–0.44 |
-| `--global-guide-strength` | 全局引导低分辨率 img2img 强度；控制布局约束程度 | 0.25–0.30 |
-| `--blend-sigma-divisor` | 接缝高斯 σ = overlap_px/divisor；越小σ越大融合越柔 | 1.20–1.50 |
-| `--gabor-alpha` | Gabor 方向纹理增强强度 | 0.50–0.55 |
-| `--scheduler` | 扩散调度器：dpm=DPM-Solver++(推荐), ddim, pndm | dpm |
-| `--num-steps` | DPM-Solver++ 步数；全图主线常见 **50**（省时可试 40） | 50 |
-| `--patch-size` | Patch 边长；仅 CLI patch 模式使用，Gradio 不暴露 | 640 |
-| `--blend-mode` | 融合模式：hann(默认), pyramid(多频带Laplacian), gaussian, linear | hann |
+- [x] CI (`ruff` + `pytest`) and `pip install -e .`
+- [x] HF packaging + publish script (`hf/`, `publish_hf_assets.py`)
+- [ ] Push HF remotes once LoRA / metadata + `HF_TOKEN` are available on this machine
+- [ ] Standalone QC / label-guard CLIs
 
----
-
-## 评审指标说明
-
-系统评审使用 **两套互补指标**，详见 **[`docs/评价体系说明.md`](docs/评价体系说明.md)**：
-
-1. **域内规则体系**：A～F 组 16 维分项（构图/灰度/纹理/伪影/分布/解剖）+ BRISQUE + 功率谱 β，产出 `ok`/`total_score`，用于筛图与调参。
-2. **通用深度学习指标**：FID/KID、Precision–Recall、sfid_spatial768（写入 `summary.json → academic_metrics`），用于横向对比。
-
-分项公式见 [`docs/评估标准说明.md`](docs/评估标准说明.md)。  
-**注意**：`eval_profile=full` 下 **`GRID_SEAM`**、**`SKIN_LINE_MISSING`** 等多走 **`soft_reasons`**，只影响语义分与排序，**不作为 `hard_tags` 一票否决**；调参请同时看 **`strict_pass_rate`** 与肉眼。自动校准请让 **`--real-images-dir`**（或流水线/Gradio 自动解析的目录）与 **`--filter-density`** 所代表的 **真实钼靶子集**一致，避免 dense 生成却用 scattered 基线（或反之）。
----
-
-## 容错设计
-
-系统在多个环节做了防御性处理，确保单点故障不会导致全流程崩溃。详细说明见 [`docs/developer/容错设计.md`](docs/developer/容错设计.md)。
-
-| 边界情况 | 处理策略 |
-|---------|---------|
-| **LLM 输出格式错误** | `ask_advisor.py` 中 `_extract_assistant_text()` 逐层 try/except（KeyError → IndexError → TypeError），解析失败抛出可读 `RuntimeError`；`next_run_params.py` 对 JSON 解析失败返回回退默认值 |
-| **API 限流 / 网络超时** | 文本 API 调用 60s 超时，Qwen-VL POST 校验每图 60s 超时；连接失败时抛出明确错误信息而非静默丢弃 |
-| **模型权重缺失** | `/health` 端点启动即校验关键路径存在性；生成脚本在 LoRA 路径不存在时 `logger.warning` 并继续（允许仅用 base model 调试） |
-| **源图像质量不足** | `filter_source_pool()` 预过滤：极端宽高比（>2.2）、面积过大/过小、圆形度<0.30、凸缺陷>0.45 的源图直接丢弃；标注伪影过重的源图降级为备选池 |
-| **生成结果异常** | 评估系统 16 维规则 + `hard_tags`（BANDING / SHAPE_ODD / ARTIFACT_BUBBLES 等）一票否决；病变样图案检测（`_suspicious_lesion_stats`）自动跳过异常生成 |
-| **子进程挂死** | Gradio/API 通过 `subprocess.run()` 调用脚本，依赖外部进程自然超时；FastAPI 任务记录 `elapsed_seconds` 用于事后排查 |
-| **Pydantic 校验** | API 层所有输入通过 Pydantic `Field(ge=..., le=...)` 做范围约束，非法参数在进入管线前被拦截并返回 422 |
-
----
-
-## 归档路线说明
-
-以下路线在早期实验中使用，结论已记录在 `docs/developer/开发日志.md`，脚本保留用于复现：
-
-| 路线 | 主要脚本 | 结论 |
-|------|----------|------|
-| SDXL Inpaint | `run_mammo_inpaint.py` | 生成较自然，但计算成本高，接缝更严重 |
-| SDXL img2img | `run_mammo_img2img.py` | 结构更弱，不如主线 |
-| T2I-Adapter | `run_mammo_adapter.py` | 条件控制精准，但训练成本高 |
-| ControlNet | `run_mammo_controlnet.py` | 解剖约束强，但对 mask 质量敏感 |
-
----
-
-## 论文展示建议
-
-1. **固定参数生成**：使用 **`mammo_sd15_v4_clean`** + **`datasets/CBIS_CLEAN_V2/metadata_clean.csv`** 条件源图，`run_mammo_sd15.py` 固定 **`--seed`** / **`--source-seed`**，生成 ≥30 张候选。
-2. **自动筛选**：`review_generated_images.py` 评审后，仅取 `rank_tier=1` 的图像进入展示。
-3. **指标写法**：参见 `docs/评价体系说明.md`：规则分项为主，`academic_metrics` 中与 FID/PRC 等可比指标并列说明及局限。
-4. **多轮对比**：`compare_runs.py` 汇总各轮 pass_rate / mean_score / BRISQUE 对比表。
-5. **可视化**：`make_top5_compare.py` 生成真实图 vs 生成图对比条。
-6. **消融**：`scripts/tests/run_ablation.py` 可复现单变量对照实验（固定 seed、同源图、逐变量改动），自动汇总对比表；历史消融记录见 `docs/developer/开发日志.md` 2026-05-08 条目。
+See [`PLAN.md`](PLAN.md) · [`CHANGELOG.md`](CHANGELOG.md) · [`CONTRIBUTING.md`](CONTRIBUTING.md).

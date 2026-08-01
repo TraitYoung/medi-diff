@@ -9,8 +9,8 @@
 
 用法：
   python3 scripts/postprocess/postprocess_freq.py \
-      --input-dir  outputs/generated/毕业论文_生成图像/<batch> \
-      --output-dir outputs/generated/毕业论文_生成图像/<batch>_postv2 \
+      --input-dir  outputs/generated/samples/<batch> \
+      --output-dir outputs/generated/samples/<batch>_postv2 \
       --target-beta 2.8 --blend 0.8 --clahe --winsorize --fill-voids
 """
 

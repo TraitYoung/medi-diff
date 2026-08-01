@@ -3,7 +3,7 @@
 模拟专家主观评分工具（任务书第 5 条）。
 
 按「放射科医生主观评审」场景，对已生成批次中的代表性图像逐项打分，
-输出结构化 CSV 和 Markdown 报告。适合答辩时展示「定性评估」结果。
+输出结构化 CSV 和 Markdown 报告。适合展示「定性评估」结果。
 
 评分维度（参考 ACR/MQSA + Sickles 2013）：
   1. 解剖轮廓合理性   (0–5)  乳腺边缘轮廓、胸肌可见性（MLO）
@@ -14,7 +14,7 @@
 
 用法（交互模式，逐图评分）：
   python3 scripts/evaluation/simulated_expert_score.py \\
-    --images-dir outputs/generated/毕业论文_生成图像/sd15_demo_xxx_000 \\
+    --images-dir outputs/generated/samples/sd15_demo_xxx_000 \\
     --evaluator "评审人A"
 
 用法（批量填入预设分数，适合脚本化复现）：
@@ -163,7 +163,7 @@ def build_report(rows: list[dict], evaluator: str, images_dir: Path) -> str:
         "- **伪影/异常缺失**：无格线/条纹/环形/拼接可见痕；",
         "- **总体钼靶相似度**：整体上是否接近真实 FFDM 影像。",
         "",
-        "> 本评分为模拟专家评审（非真实放射科医生），仅供毕业设计定性展示使用。",
+        "> 本评分为模拟专家评审（非真实放射科医生），仅供研究定性展示使用。",
     ]
     return "\n".join(lines)
 

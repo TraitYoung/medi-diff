@@ -1,0 +1,7 @@
+# Soft lock for CPU/CI toolchain (generated from local .venv, 2026-08-01).
+# Full GPU stack is intentionally not frozen here — use requirements.txt on the training machine.
+
+numpy==2.5.1
+opencv-python-headless==5.0.0.93
+pytest==9.1.1
+ruff==0.16.1

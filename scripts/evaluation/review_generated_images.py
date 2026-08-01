@@ -118,7 +118,7 @@ except Exception:
 # ---------------------------------------------------------------------------
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
-DEFAULT_IMAGES_DIR = ROOT / 'outputs/generated/毕业论文_生成图像'
+DEFAULT_IMAGES_DIR = ROOT / 'outputs/generated/samples'
 DEFAULT_GROUP_WEIGHTS = {
     'A': 0.2,
     'B': 0.1,

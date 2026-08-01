@@ -5,7 +5,7 @@ Gradio / 单机入口「接线」自检（不导入 gradio/torch）。
 在项目根执行：
   python3 scripts/tools/verify_ui_wiring.py
 
-用法：答辩或部署前快速确认脚本路径、默认目录与 METADATA/LORA 存在性；
+用法：部署或联调前快速确认脚本路径、默认目录与 METADATA/LORA 存在性；
       不涉及真实 GPU 推理。
 """
 from __future__ import annotations
@@ -54,9 +54,9 @@ def main() -> int:
         else:
             _ok(str(p.relative_to(ROOT)))
 
-    thesis = ROOT / "outputs/generated/毕业论文_生成图像"
-    thesis.mkdir(parents=True, exist_ok=True)
-    _ok(f"毕业论文输出根可写（或已存在）: {thesis.relative_to(ROOT)}")
+    samples = ROOT / "outputs/generated/samples"
+    samples.mkdir(parents=True, exist_ok=True)
+    _ok(f"生成样本输出根可写（或已存在）: {samples.relative_to(ROOT)}")
 
     meta_v2 = ROOT / "datasets/CBIS_CLEAN_V2/metadata_clean.csv"
     meta_v1 = ROOT / "datasets/CBIS_CLEAN/metadata_clean.csv"

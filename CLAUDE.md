@@ -4,11 +4,19 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project overview
 
-A mammography (FFDM) image generation and evaluation system using **Stable Diffusion 1.5 + LoRA** fine-tuned on CBIS-DDSM. **Default generation is full-image single-pass img2img** (no patch grid; fast, no seam banding). Bachelor's capstone project. Pipeline: data preprocessing → LoRA training → conditional generation → automated quality evaluation → optional LLM advisor reports.
+**MammoGen** (`medi-diff`): mammography (FFDM) image generation and evaluation using **Stable Diffusion 1.5 + LoRA** fine-tuned on CBIS-DDSM. **Default generation is full-image single-pass img2img** (no patch grid; fast, no seam banding). Open-source toolchain — research/education only, not for clinical diagnosis. Pipeline: data preprocessing → LoRA training → conditional generation → automated quality evaluation → optional LLM advisor reports.
 
 ## Common commands
 
 ```bash
+# Editable / CI toolchain
+pip install -r requirements-dev.txt
+pytest -m "not heavy"
+ruff check scripts/core scripts/assistant/tuning_state.py scripts/tests
+
+# Publish HF cards/Space (needs HF_TOKEN; weights/CSV optional)
+python3 scripts/tools/publish_hf_assets.py --all
+
 # Start Gradio UI + FastAPI backend (default ports: 7860, 8000)
 bash apps/start.sh
 
@@ -102,7 +110,7 @@ python3 scripts/tools/verify_ui_wiring.py
 
 ### Gradio/Batch directory convention
 
-Generated images go to `outputs/generated/毕业论文_生成图像/<prefix>_<timestamp>_<seq>/`. The UI gallery only scans directories ending in `_000` within `毕业论文_生成图像/` and the top level of `generated/`. The `--output-base` flag in `run_full_report.py` explicitly targets `毕业论文_生成图像/` to keep UI-visible batches consistent.
+Generated images go to `outputs/generated/samples/<prefix>_<timestamp>_<seq>/`. The UI gallery scans batch dirs under `samples/`. The `--output-base` flag in `run_full_report.py` defaults to `outputs/generated/samples` so UI-visible batches stay consistent. Legacy path `outputs/generated/毕业论文_生成图像/` is retired — migrate old batches if needed.
 
 ### Label guard system
 

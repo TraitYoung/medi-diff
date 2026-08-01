@@ -52,7 +52,7 @@ def main() -> None:
     # Postprocess and source-quality-sort flags archived
     p.add_argument("--real-images-dir", type=str, default="")
     p.add_argument("--output-base", type=str,
-                   default="outputs/generated/毕业论文_生成图像")
+                   default="outputs/generated/samples")
 
     args, unknown = p.parse_known_args()
 

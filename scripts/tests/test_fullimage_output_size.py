@@ -2,19 +2,25 @@
 """验证 fullimage_output_long_side 对输出长边的控制（双向：放大 + 缩小）。
 
 使用最小化假 pipe（直接返回输入潜变量对应的图像），不依赖真实 GPU 模型加载。
+需要 torch / PIL：默认 CI 通过 `-m "not heavy"` 跳过。
 """
 from __future__ import annotations
 
 import sys
 from pathlib import Path
+from unittest.mock import MagicMock
+
+import pytest
+
+pytestmark = pytest.mark.heavy
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 import numpy as np
-import torch
-from PIL import Image
-from unittest.mock import MagicMock
+
+torch = pytest.importorskip("torch")
+pytest.importorskip("PIL")
 
 
 def test_resize_long_side_downscale():

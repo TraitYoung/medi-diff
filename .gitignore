@@ -19,6 +19,8 @@ build/
 htmlcov/
 .coverage
 *.coverage.*
+.venv/
+venv/
 
 # Large data/model/output directories (NOT pushed to GitHub)
 outputs/
@@ -45,3 +47,12 @@ Thumbs.db
 docs/附件6：*模版.docx
 docs/附件6：*模板.docx
 docs/毕业设计说明书*.docx
+
+# 答辩 / 毕设口径文档（本地保留，不公开）
+docs/developer/答辩必备.md
+docs/developer/模拟专家评分表.md
+docs/developer/毕业设计任务书_*.md
+docs/developer/毕业设计说明书大纲.md
+docs/developer/项目交付检查清单.md
+docs/developer/AI全栈工程师_面试准备.md
+docs/developer/架构说明_面试准备.md
