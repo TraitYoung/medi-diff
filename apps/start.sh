@@ -49,8 +49,8 @@ fi
 rm -f "$ROOT/.gradio_pid"
 
 echo "=================================="
-echo " medi-diff 启动"
-echo " 模式: $MODE"
+echo " MammoGen start"
+echo " mode: $MODE"
 [[ "$MODE" != "ui-only"  ]] && echo " FastAPI → :${API_PORT}"
 [[ "$MODE" != "api-only" ]] && echo " Gradio  → :${UI_PORT}"
 echo "=================================="

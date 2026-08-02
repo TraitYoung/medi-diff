@@ -69,7 +69,7 @@
 ```json
 {
   "ok": true,
-  "root": "/root/autodl-tmp/medi-diff",
+  "root": "/path/to/medi-diff",
   "sd15_model_exists": true,
   "sd15_lora_exists": true,
   "sdxl_model_exists": false,
@@ -203,7 +203,7 @@ GET /batches?limit=20
 [
   {
     "name": "api_demo_20260503_120000_000",
-    "path": "/root/autodl-tmp/medi-diff/outputs/generated/...",
+    "path": "/path/to/medi-diff/outputs/generated/...",
     "image_count": 6,
     "images": ["0001.png", "0002.png", ...],
     "has_source_mapping": false,
@@ -234,7 +234,7 @@ GET /batches?limit=20
 
 ```json
 {
-  "latest_report_path": "/root/autodl-tmp/medi-diff/outputs/reports/my_run_20260503/FINAL_REPORT.md",
+  "latest_report_path": "/path/to/medi-diff/outputs/reports/my_run_20260503/FINAL_REPORT.md",
   "exists": true
 }
 ```

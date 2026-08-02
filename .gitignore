@@ -43,16 +43,26 @@ hf_cache/
 .DS_Store
 Thumbs.db
 
-# 毕业设计模板与说明书（学校文件，不提交到 GitHub）
+# Internal drafts (local only, not published)
 docs/附件6：*模版.docx
 docs/附件6：*模板.docx
 docs/毕业设计说明书*.docx
-
-# 答辩 / 毕设口径文档（本地保留，不公开）
+docs/specForge.md
+PLAN.md
 docs/developer/答辩必备.md
 docs/developer/模拟专家评分表.md
 docs/developer/毕业设计任务书_*.md
 docs/developer/毕业设计说明书大纲.md
 docs/developer/项目交付检查清单.md
-docs/developer/AI全栈工程师_面试准备.md
+docs/developer/AI全栈工程师_*.md
 docs/developer/架构说明_面试准备.md
+# Same drafts if moved under docs/private/
+docs/private/答辩必备.md
+docs/private/模拟专家评分表.md
+docs/private/毕业设计*.md
+docs/private/项目交付检查清单.md
+docs/private/AI全栈工程师_*.md
+docs/private/架构说明_面试准备.md
+docs/private/OSS_MIGRATION.md
+docs/private/python_knowledge.md
+docs/private/工作台备忘.md

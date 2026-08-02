@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-消融实验对比表生成器（任务书第 5 条）。
+消融实验对比表生成器（archived）。
 
 从多个 eval 目录的 summary.json 中提取关键指标，合并为 Markdown / CSV 消融表。
 支持为每个实验组手动注标「消融因子」说明（--labels），或自动从目录名推断。
@@ -123,7 +123,7 @@ def build_csv_rows(rows: list[tuple[str, dict]]) -> list[list[str]]:
 
 
 def main() -> None:
-    p = argparse.ArgumentParser(description="生成消融实验对比表（任务书第 5 条）")
+    p = argparse.ArgumentParser(description="生成消融实验对比表（archived）")
     p.add_argument(
         "--runs",
         nargs="*",

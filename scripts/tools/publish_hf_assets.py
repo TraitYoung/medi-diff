@@ -28,7 +28,10 @@ SPACE_ID = "TraitYoung/mammo-gallery"
 
 DEFAULT_LORA = ROOT / "outputs/lora/mammo_sd15_v6_allMLO/final_lora"
 DEFAULT_META = ROOT / "datasets/CBIS_CLEAN_V2/metadata_clean.csv"
-DEMO_SRC = ROOT / "medi-diff-demonstration"
+DEMO_SRC_CANDIDATES = (
+    ROOT / "docs" / "assets",
+    ROOT / "medi-diff-demonstration",
+)
 
 
 def _hub():
@@ -53,10 +56,11 @@ def _ensure_token(login) -> None:
 def _sync_gallery_assets() -> None:
     dest = HF_DIR / "mammo-gallery" / "assets"
     dest.mkdir(parents=True, exist_ok=True)
-    if not DEMO_SRC.is_dir():
-        print(f"[WARN] demo screenshots missing: {DEMO_SRC}")
+    demo_src = next((p for p in DEMO_SRC_CANDIDATES if p.is_dir()), None)
+    if demo_src is None:
+        print(f"[WARN] demo screenshots missing (tried: {list(DEMO_SRC_CANDIDATES)})")
         return
-    for src in sorted(DEMO_SRC.glob("*.png")):
+    for src in sorted(demo_src.glob("*.png")):
         shutil.copy2(src, dest / src.name)
         print(f"[OK] gallery asset ← {src.name}")
 

@@ -706,16 +706,16 @@ input[type="radio"], input[type="checkbox"] { accent-color: #4A7FA5 !important; 
 
 # ── UI 构建 ──────────────────────────────────────────────────────────────────
 
-with gr.Blocks(title="乳腺钼靶扩散生成系统") as demo:
+with gr.Blocks(title="MammoGen") as demo:
     gr.HTML("""
     <div class="app-header">
-      <h1>乳腺钼靶扩散生成系统</h1>
-      <div class="sub">Mammography Synthesis · SD&nbsp;1.5&nbsp;+&nbsp;LoRA&nbsp;Fine-tuning</div>
-      <div class="source">训练数据集来源：<a href="https://github.com/sposso/CBIS-DDSM-DATASET" target="_blank" rel="noopener noreferrer">CBIS-DDSM-DATASET</a></div>
+      <h1>MammoGen</h1>
+      <div class="sub">Synthetic mammography · SD&nbsp;1.5&nbsp;+&nbsp;LoRA · automated QC</div>
+      <div class="source">Training data：<a href="https://github.com/sposso/CBIS-DDSM-DATASET" target="_blank" rel="noopener noreferrer">CBIS-DDSM-DATASET</a> · Not for clinical diagnosis</div>
       <div>
         <span class="tag-pill">CBIS-DDSM</span>
         <span class="tag-pill">LoRA</span>
-        <span class="tag-pill">视觉（Qwen-VL）+ 指标（DeepSeek）评估体系</span>
+        <span class="tag-pill">16-dim rule QC · optional LLM advisor</span>
       </div>
     </div>
     """)

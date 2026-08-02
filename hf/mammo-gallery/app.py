@@ -10,13 +10,13 @@ ROOT = Path(__file__).resolve().parent
 ASSETS = ROOT / "assets"
 
 CAPTIONS = {
-    "图片 1.png": "Generate — full-image presets (MLO / density filters)",
-    "图片 2.png": "Gallery — browse generated batches",
-    "图片 3.png": "Gallery — source vs generated compare layout",
-    "图片 4.png": "Gallery — curated export by evaluation rank",
-    "图片 5.png": "One-click pipeline — generate → eval → advise",
-    "图片 6.png": "Evaluation — pass rate / BRISQUE / A–F groups",
-    "图片 7.png": "Tuning history — rollback last runs",
+    "ui-generate.png": "Generate — full-image presets (MLO / density filters)",
+    "ui-gallery.png": "Gallery — browse generated batches",
+    "ui-compare.png": "Gallery — source vs generated compare layout",
+    "ui-curated.png": "Gallery — curated export by evaluation rank",
+    "ui-pipeline.png": "One-click pipeline — generate → eval → advise",
+    "ui-eval.png": "Evaluation — pass rate / BRISQUE / A–F groups",
+    "ui-tuning.png": "Tuning history — rollback last runs",
 }
 
 
@@ -24,9 +24,13 @@ def _load_gallery() -> list[tuple[Image.Image, str]]:
     items: list[tuple[Image.Image, str]] = []
     if not ASSETS.is_dir():
         return items
+    for name in CAPTIONS:
+        path = ASSETS / name
+        if path.is_file():
+            items.append((Image.open(path), CAPTIONS[name]))
     for path in sorted(ASSETS.glob("*.png")):
-        caption = CAPTIONS.get(path.name, path.stem)
-        items.append((Image.open(path), caption))
+        if path.name not in CAPTIONS:
+            items.append((Image.open(path), path.stem))
     return items
 
 

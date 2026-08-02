@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-模拟专家主观评分工具（任务书第 5 条）。
+模拟专家主观评分工具（archived）。
 
 按「放射科医生主观评审」场景，对已生成批次中的代表性图像逐项打分，
 输出结构化 CSV 和 Markdown 报告。适合展示「定性评估」结果。
@@ -169,7 +169,7 @@ def build_report(rows: list[dict], evaluator: str, images_dir: Path) -> str:
 
 
 def main() -> None:
-    p = argparse.ArgumentParser(description="模拟专家主观评分（任务书第 5 条）")
+    p = argparse.ArgumentParser(description="模拟专家主观评分（archived）")
     p.add_argument("--images-dir", type=Path, required=True, help="待评分图像目录")
     p.add_argument("--evaluator", type=str, default="模拟评审人", help="评审人姓名/编号")
     p.add_argument("--max-images", type=int, default=10, help="最多评审张数（默认 10）")

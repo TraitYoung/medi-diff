@@ -55,15 +55,15 @@ flowchart LR
 
 ## Demo
 
-Inference needs a local **NVIDIA GPU (≥8GB)**. UI screenshots live in-repo; static HF Space packaging is under [`hf/mammo-gallery/`](hf/mammo-gallery/) (publish with `scripts/tools/publish_hf_assets.py`).
+Inference needs a local **NVIDIA GPU (≥8GB)**. UI screenshots live under [`docs/assets/`](docs/assets/); static HF Space packaging is under [`hf/mammo-gallery/`](hf/mammo-gallery/) (publish with `scripts/tools/publish_hf_assets.py`).
 
 | Screenshot | Tab |
 |------------|-----|
-| ![Generate](medi-diff-demonstration/图片%201.png) | Generate |
-| ![Gallery](medi-diff-demonstration/图片%202.png) | Gallery |
-| ![Source compare](medi-diff-demonstration/图片%203.png) | Real vs generated |
-| ![Pipeline](medi-diff-demonstration/图片%205.png) | One-click pipeline |
-| ![Eval](medi-diff-demonstration/图片%206.png) | Evaluation |
+| ![Generate](docs/assets/ui-generate.png) | Generate |
+| ![Gallery](docs/assets/ui-gallery.png) | Gallery |
+| ![Source compare](docs/assets/ui-compare.png) | Real vs generated |
+| ![Pipeline](docs/assets/ui-pipeline.png) | One-click pipeline |
+| ![Eval](docs/assets/ui-eval.png) | Evaluation |
 
 | HF asset | ID | Status |
 |----------|-----|--------|
@@ -171,14 +171,16 @@ Tip: under `eval_profile=full`, tags like `GRID_SEAM` / `SKIN_LINE_MISSING` are 
 
 ## Docs
 
+Full index: [`docs/README.md`](docs/README.md).
+
 | Doc | Topic |
 |-----|--------|
 | [用户操作手册](docs/developer/用户操作手册.md) | Install, UI, FAQ |
 | [apps README](apps/README.md) | Gradio vs API, output dirs |
 | [API 接口文档](docs/developer/API接口文档.md) | REST + curl |
+| [评价体系说明](docs/评价体系说明.md) | Dual-track QC metrics |
 | [项目结构说明](docs/developer/项目结构说明.md) | Path responsibilities |
-| [容错设计](docs/developer/容错设计.md) | Degraded paths, validation |
-| [开发日志](docs/developer/开发日志.md) | Experiment journal |
+| [SECURITY](SECURITY.md) | Vulnerability reporting |
 
 ---
 
@@ -210,8 +212,8 @@ Tip: under `eval_profile=full`, tags like `GRID_SEAM` / `SKIN_LINE_MISSING` are 
 **Q: Do I need an LLM API key?**  
 A: No for generate/eval. Keys in `.env` are only for optional advisor reports (`run_generate_eval_advise` / `run_full_report`).
 
-**Q: Where did `毕业论文_生成图像` go?**  
-A: Renamed to `outputs/generated/samples/`. Move old batches there if the gallery looks empty.
+**Q: Gallery is empty after an upgrade — where are batches written?**  
+A: Default root is `outputs/generated/samples/`. Move any older batch folders into that directory.
 
 **Q: Can I use patch-overlap generation?**  
 A: Full-image is the supported default. Historical patch routes live under `archive/` / git history for research replay.
@@ -223,9 +225,4 @@ A: Planned HF Space gallery of pre-generated samples (`TraitYoung/mammo-gallery`
 
 ## Roadmap
 
-- [x] CI (`ruff` + `pytest`) and `pip install -e .`
-- [x] HF packaging + publish script (`hf/`, `publish_hf_assets.py`)
-- [ ] Push HF remotes once LoRA / metadata + `HF_TOKEN` are available on this machine
-- [ ] Standalone QC / label-guard CLIs
-
-See [`PLAN.md`](PLAN.md) · [`CHANGELOG.md`](CHANGELOG.md) · [`CONTRIBUTING.md`](CONTRIBUTING.md).
+See [`ROADMAP.md`](ROADMAP.md) · [`CHANGELOG.md`](CHANGELOG.md) · [`CONTRIBUTING.md`](CONTRIBUTING.md) · [`CITATION.cff`](CITATION.cff).

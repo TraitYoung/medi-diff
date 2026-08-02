@@ -34,7 +34,6 @@ sys.path.insert(0, str(ROOT))
 JPEG_ROOT_CANDIDATES = [
     ROOT / "datasets" / "controls",
     ROOT / "datasets" / "jpeg",
-    Path("/root/autodl-tmp/datasets/jpeg"),
 ]
 MASK_ROOT = ROOT / "datasets" / "breast_masks"
 

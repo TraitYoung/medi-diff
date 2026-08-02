@@ -45,7 +45,6 @@ sys.path.insert(0, str(ROOT))
 
 JPEG_ROOT_CANDIDATES = [
     ROOT / "datasets" / "jpeg",
-    Path("/root/autodl-tmp/datasets/jpeg"),
 ]
 MASK_ROOT = ROOT / "datasets" / "breast_masks"
 DEFAULT_CSV = ROOT / "datasets" / "CBIS_CLEAN_V2" / "metadata_clean.csv"

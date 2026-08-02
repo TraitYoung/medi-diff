@@ -18,8 +18,8 @@
 - [ ] **Step 1: 下载 LaMa traced model**
 
 ```bash
-mkdir -p /root/autodl-tmp/medi-diff/hf_cache/lama
-wget -O /root/autodl-tmp/medi-diff/hf_cache/lama/big-lama.pt \
+mkdir -p hf_cache/lama
+wget -O hf_cache/lama/big-lama.pt \
   "https://github.com/Sanster/models/releases/download/add_big_lama/big-lama.pt"
 ```
 
@@ -331,7 +331,7 @@ def _load_mask(src_rel: str) -> np.ndarray | None:
 
 def _load_image(src_rel: str) -> np.ndarray | None:
     """从 CBIS_CLEAN_V2 的 src 字段加载原始 JPEG。"""
-    for root_candidate in [ROOT / "datasets" / "jpeg", Path("/root/autodl-tmp/datasets/jpeg")]:
+    for root_candidate in [ROOT / "datasets" / "jpeg", ROOT / "datasets" / "controls"]:
         p = root_candidate / src_rel
         if p.exists():
             return cv2.imread(str(p), cv2.IMREAD_GRAYSCALE)

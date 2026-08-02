@@ -7,6 +7,7 @@ Thanks for interest in improving this project. Short rules keep reviews fast.
 1. Open an issue for non-trivial changes (API, eval thresholds, training defaults).
 2. Keep PRs focused — one concern per PR.
 3. Do **not** commit weights, datasets, `.env`, or generated batches (`outputs/`, `datasets/`, `hf_cache/`).
+4. Security issues: follow [`SECURITY.md`](SECURITY.md) (do not file public issues for vulns).
 
 ## Dev setup
 
