@@ -93,6 +93,18 @@ pip install -r requirements.txt
 cp .env.example .env   # optional: text / Qwen-VL API keys for advisor reports
 ```
 
+### Local GPU (RTX 50-series / Blackwell)
+
+RTX 5070 Ti and other **sm_120** GPUs need **PyTorch built with CUDA 12.8+**. Older cu124 wheels often fail with `no kernel image is available for execution on the device`. Prefer **WSL2** over native Windows for fewer packaging pitfalls.
+
+```bash
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
+python3 scripts/tools/check_local_gpu.py
+# Expect mem-profile(auto) → local on ~12–16 GiB cards, and matmul probe: OK
+```
+
+Generation uses `--mem-profile auto` by default (`cloud` ≥20 GiB, `local` 10–20 GiB with attention/VAE slicing, `tight` <10 GiB with CPU offload). Gradio defaults to the **本地流畅** preset (28 steps + `local`).
+
 ### 2. Place weights & data
 
 | Asset | Local path | HF (after publish) |
@@ -123,7 +135,8 @@ python3 scripts/assistant/run_generate_eval_advise.py \
 ```
 
 Default sample output root: `outputs/generated/samples/`.  
-Smoke check (no GPU): `python3 scripts/tools/verify_ui_wiring.py`
+Smoke check (no GPU): `python3 scripts/tools/verify_ui_wiring.py`  
+GPU / VRAM profile: `python3 scripts/tools/check_local_gpu.py`
 
 ---
 
@@ -133,6 +146,7 @@ Smoke check (no GPU): `python3 scripts/tools/verify_ui_wiring.py`
 |------|--------|
 | Mode | `full-image` (single-pass img2img) |
 | Strength / CFG / steps | `0.44` / `7.5` / `40` (DPM-Solver++) |
+| Mem profile | `auto` (`--mem-profile local` on typical 12–16 GiB GPUs) |
 | LoRA | `mammo_sd15_v6_allMLO` (r=32) |
 | Label guard | on by default (heuristic burn-in cleanup) |
 | Source pre-filter | circularity ≥ 0.30, convex_defect ≤ 0.45 |

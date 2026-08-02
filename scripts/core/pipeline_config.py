@@ -19,7 +19,7 @@ class GenParams:
     """SD1.5 + LoRA generation parameters (full-image single-pass img2img)."""
     strength: float = 0.44
     guidance_scale: float = 7.5
-    num_steps: int = 50
+    num_steps: int = 40
     scheduler: str = "dpm"
     prompt: str = (
         "medical grayscale FFDM mammogram, sharp MLO anatomy, triangular "

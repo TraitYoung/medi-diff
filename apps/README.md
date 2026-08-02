@@ -12,12 +12,18 @@
 
 **Dataset attribution:** header links [`CBIS-DDSM-DATASET`](https://github.com/sposso/CBIS-DDSM-DATASET). Canonical cleaned metadata: `datasets/CBIS_CLEAN_V2/metadata_clean.csv`.
 
-**「生成」tab (Gradio)**
+**「生成」 / 「一键流水线」**
 
-- Streamlined panel: speed-oriented controls, view / **density (default `scattered`)**. Fixed **full-image** mode (no patch UI).
-- Passes `--mode full-image` and **`--fullimage-output-long-side 2048`** (same as CLI defaults).
-- Defaults aligned with `GenParams` / CLI: **`strength=0.44`**, **`guidance_scale=7.5`**, **`num_steps=40`**, scheduler DPM.
+- Speed preset (default **本地流畅**):
+  - **本地流畅** → `num_steps=28`, `--mem-profile local` (attention/VAE slicing; for ~12–16 GiB GPUs such as 5070 Ti)
+  - **云端质量** → `num_steps=40`, `--mem-profile auto`
+- Sampling defaults otherwise match `GenParams`: **`strength=0.44`**, **`guidance_scale=7.5`**, full-image, **`--fullimage-output-long-side 2048`**.
 - LoRA fixed to `outputs/lora/mammo_sd15_v6_allMLO/final_lora`. Switch weights / negative prompts via CLI or API.
 - Advisor JSON `outputs/reports/LATEST_NEXT_RUN.json`: re-run with CLI `run_full_report.py --from-latest-tuning`. `load_latest_next_run_into_tuning()` is **not** wired to a UI button (experimental). Use **「调参历史」** for rollback (`PARAM_HISTORY.json`).
 
-Smoke check: `python3 scripts/tools/verify_ui_wiring.py` (see [用户操作手册](../docs/developer/用户操作手册.md)).
+Smoke checks:
+
+```bash
+python3 scripts/tools/verify_ui_wiring.py
+python3 scripts/tools/check_local_gpu.py
+```

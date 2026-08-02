@@ -66,6 +66,13 @@ def main() -> None:
     p.add_argument("--strength", type=float, default=0.44)
     p.add_argument("--guidance-scale", type=float, default=7.5)
     p.add_argument("--num-steps", type=int, default=40)
+    p.add_argument(
+        "--mem-profile",
+        type=str,
+        default="auto",
+        choices=["auto", "cloud", "local", "tight"],
+        help="Forwarded to run_mammo_sd15.py GPU memory profile",
+    )
     # --overlap-ratio removed (full-image only)
     p.add_argument("--scheduler", type=str, default="dpm")
     p.add_argument("--fullimage-long-side", type=int, default=768)
@@ -111,6 +118,7 @@ def main() -> None:
             "--strength", str(args.strength),
             "--guidance-scale", str(args.guidance_scale),
             "--scheduler", args.scheduler,
+            "--mem-profile", args.mem_profile,
             "--mode", args.mode,
             "--fullimage-long-side", str(args.fullimage_long_side),
             "--fullimage-output-long-side", str(args.fullimage_output_long_side),

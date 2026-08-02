@@ -26,6 +26,21 @@ DEFAULT_LORA = ROOT / "outputs/lora/mammo_sd15_v6_allMLO/final_lora"
 METADATA_CSV = ROOT / "datasets/CBIS_CLEAN_V2/metadata_clean.csv"
 DEFAULT_OUTPUT_LONG_SIDE = 2048
 
+# Speed / VRAM presets (steps + mem-profile). Sampling strength/CFG stay on GenParams.
+SPEED_PRESET_LOCAL = "本地流畅"
+SPEED_PRESET_CLOUD = "云端质量"
+SPEED_PRESETS = {
+    SPEED_PRESET_LOCAL: {"steps": 28, "mem_profile": "local"},
+    SPEED_PRESET_CLOUD: {"steps": 40, "mem_profile": "auto"},
+}
+DEFAULT_SPEED_PRESET = SPEED_PRESET_LOCAL
+
+
+def _speed_preset_values(preset: str) -> tuple[int, str]:
+    cfg = SPEED_PRESETS.get(preset) or SPEED_PRESETS[DEFAULT_SPEED_PRESET]
+    return int(cfg["steps"]), str(cfg["mem_profile"])
+
+
 # ── 工具函数 ─────────────────────────────────────────────────────────────────
 
 def _run(command: list[str]) -> str:
@@ -415,6 +430,7 @@ def run_generation(
     filter_view: str,
     filter_density: str,
     prefix: str,
+    mem_profile: str = "local",
 ) -> str:
     command = [
         sys.executable,
@@ -427,6 +443,7 @@ def run_generation(
         "--strength", str(float(strength)),
         "--guidance-scale", str(float(guidance_scale)),
         "--seed", str(int(seed)),
+        "--mem-profile", str(mem_profile or "local"),
         "--output-subdir-prefix", prefix.strip() or "gradio_sd15",
         "--output-base", str(GENERATED_DIR),
         "--mode", "full-image",
@@ -451,6 +468,7 @@ def run_pipeline(
     filter_view: str,
     filter_density: str,
     from_latest_tuning: bool,
+    mem_profile: str = "local",
 ) -> str:
     command = [
         sys.executable,
@@ -465,6 +483,7 @@ def run_pipeline(
         "--strength", str(float(strength)),
         "--guidance-scale", str(float(guidance_scale)),
         "--seed", str(int(seed)),
+        "--mem-profile", str(mem_profile or "local"),
         "--output-base", str(GENERATED_DIR),
         "--fullimage-output-long-side", str(DEFAULT_OUTPUT_LONG_SIDE),
     ]
@@ -722,6 +741,15 @@ with gr.Blocks(title="MammoGen") as demo:
 
     # ── Tab 1: 生成 ──────────────────────────────────────────────────────────
     with gr.Tab("生成"):
+        _local_steps, _local_mem = _speed_preset_values(DEFAULT_SPEED_PRESET)
+        with gr.Row():
+            g_speed = gr.Radio(
+                choices=list(SPEED_PRESETS.keys()),
+                value=DEFAULT_SPEED_PRESET,
+                label="速度档（VRAM）",
+                info="本地流畅：28 steps + mem-profile=local；云端质量：40 steps + auto",
+            )
+            g_mem_profile = gr.Textbox(value=_local_mem, visible=False)
         with gr.Row():
             g_filter_view = gr.Dropdown(
                 _VIEW_CHOICES, value="MLO", label="体位筛选"
@@ -732,13 +760,13 @@ with gr.Blocks(title="MammoGen") as demo:
             g_num_images = gr.Slider(1, 20, value=6, step=1, label="生成数量")
 
         with gr.Row():
-            g_steps = gr.Slider(5, 100, value=40, step=1, label="采样步数", visible=False)
+            g_steps = gr.Slider(5, 100, value=_local_steps, step=1, label="采样步数", visible=False)
             g_strength = gr.Slider(0.05, 0.95, value=0.44, step=0.01, label="strength", visible=False)
             g_guidance = gr.Slider(1.0, 15.0, value=7.5, step=0.1, label="guidance scale", visible=False)
 
         with gr.Accordion("高级采样参数", open=False):
             with gr.Row():
-                g_steps_v = gr.Slider(5, 100, value=40, step=1, label="采样步数")
+                g_steps_v = gr.Slider(5, 100, value=_local_steps, step=1, label="采样步数")
                 g_strength_v = gr.Slider(0.05, 0.95, value=0.44, step=0.01, label="strength")
                 g_guidance_v = gr.Slider(1.0, 15.0, value=7.5, step=0.1, label="guidance scale")
             with gr.Row():
@@ -749,6 +777,15 @@ with gr.Blocks(title="MammoGen") as demo:
         g_btn = gr.Button("开始生成", variant="primary")
         g_log = gr.Textbox(label="生成日志", lines=16, elem_classes=["log-box"])
 
+        def _apply_gen_speed(preset: str):
+            steps, mem = _speed_preset_values(preset)
+            return steps, steps, mem
+
+        g_speed.change(
+            fn=_apply_gen_speed,
+            inputs=[g_speed],
+            outputs=[g_steps, g_steps_v, g_mem_profile],
+        )
         # Accordion 滑条同步回隐藏滑条
         g_steps_v.change(fn=lambda v: v, inputs=[g_steps_v], outputs=[g_steps])
         g_strength_v.change(fn=lambda v: v, inputs=[g_strength_v], outputs=[g_strength])
@@ -760,7 +797,7 @@ with gr.Blocks(title="MammoGen") as demo:
                 g_num_images, g_steps, g_strength, g_guidance,
                 g_seed, g_source_seed,
                 g_filter_view, g_filter_density,
-                g_prefix,
+                g_prefix, g_mem_profile,
             ],
             outputs=[g_log],
         )
@@ -773,16 +810,23 @@ with gr.Blocks(title="MammoGen") as demo:
             elem_classes=["prose"],
         )
         with gr.Row():
+            p_speed = gr.Radio(
+                choices=list(SPEED_PRESETS.keys()),
+                value=DEFAULT_SPEED_PRESET,
+                label="速度档（VRAM）",
+            )
+            p_mem_profile = gr.Textbox(value=_local_mem, visible=False)
+        with gr.Row():
             p_filter_view = gr.Dropdown(_VIEW_CHOICES, value="MLO", label="体位")
             p_filter_density = gr.Dropdown(_DENSITY_CHOICES, value="scattered", label="密度")
             p_num_images = gr.Slider(1, 20, value=6, step=1, label="生成数量")
         with gr.Row():
-            p_steps = gr.Slider(5, 100, value=40, step=1, label="采样步数", visible=False)
+            p_steps = gr.Slider(5, 100, value=_local_steps, step=1, label="采样步数", visible=False)
             p_strength = gr.Slider(0.05, 0.95, value=0.44, step=0.01, label="strength", visible=False)
             p_guidance = gr.Slider(1.0, 15.0, value=7.5, step=0.1, label="guidance", visible=False)
         with gr.Accordion("采样参数", open=False):
             with gr.Row():
-                p_steps_v = gr.Slider(5, 100, value=40, step=1, label="采样步数")
+                p_steps_v = gr.Slider(5, 100, value=_local_steps, step=1, label="采样步数")
                 p_strength_v = gr.Slider(0.05, 0.95, value=0.44, step=0.01, label="strength")
                 p_guidance_v = gr.Slider(1.0, 15.0, value=7.5, step=0.1, label="guidance scale")
             p_seed = gr.Number(value=2026, precision=0, label="seed")
@@ -793,6 +837,15 @@ with gr.Blocks(title="MammoGen") as demo:
         p_btn = gr.Button("启动一键流水线", variant="primary")
         p_log = gr.Textbox(label="流水线日志", lines=18, elem_classes=["log-box"])
 
+        def _apply_pipe_speed(preset: str):
+            steps, mem = _speed_preset_values(preset)
+            return steps, steps, mem
+
+        p_speed.change(
+            fn=_apply_pipe_speed,
+            inputs=[p_speed],
+            outputs=[p_steps, p_steps_v, p_mem_profile],
+        )
         p_steps_v.change(fn=lambda v: v, inputs=[p_steps_v], outputs=[p_steps])
         p_strength_v.change(fn=lambda v: v, inputs=[p_strength_v], outputs=[p_strength])
         p_guidance_v.change(fn=lambda v: v, inputs=[p_guidance_v], outputs=[p_guidance])
@@ -803,7 +856,7 @@ with gr.Blocks(title="MammoGen") as demo:
                 p_tag_prefix, p_num_images, p_steps,
                 p_strength, p_guidance, p_seed,
                 p_filter_view, p_filter_density,
-                p_from_latest,
+                p_from_latest, p_mem_profile,
             ],
             outputs=[p_log],
         )

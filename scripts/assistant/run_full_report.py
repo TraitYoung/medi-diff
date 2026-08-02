@@ -47,6 +47,12 @@ def main() -> None:
     p.add_argument("--strength", type=float, default=0.44)
     p.add_argument("--guidance-scale", type=float, default=7.5)
     p.add_argument("--num-steps", type=int, default=40)
+    p.add_argument(
+        "--mem-profile",
+        type=str,
+        default="auto",
+        choices=["auto", "cloud", "local", "tight"],
+    )
     # --overlap-ratio removed (full-image only)
     p.add_argument("--fullimage-output-long-side", type=int, default=2048)
     # Postprocess and source-quality-sort flags archived
@@ -79,6 +85,7 @@ def main() -> None:
             "--mode", args.mode,
             "--filter-view", args.filter_view,
             "--filter-density", args.filter_density,
+            "--mem-profile", args.mem_profile,
             "--output-base", args.output_base,
         ])
         # Apply parameter overrides from JSON
@@ -105,6 +112,7 @@ def main() -> None:
             "--strength", str(args.strength),
             "--guidance-scale", str(args.guidance_scale),
             "--num-steps", str(args.num_steps),
+            "--mem-profile", args.mem_profile,
             "--fullimage-output-long-side", str(args.fullimage_output_long_side),
             "--output-base", args.output_base,
         ])

@@ -12,6 +12,7 @@ Public product roadmap for **MammoGen**. Author migration notes live under `docs
 
 ## Next
 
+- [x] Local / consumer GPU mem profiles (`--mem-profile`, Gradio 本地流畅)
 - [ ] Publish HF remotes: LoRA weights, cleaned metadata, static gallery Space
 - [ ] Standalone QC CLI (rule engine usable without the generation stack)
 - [ ] Standalone label-guard CLI (DICOM burn-in cleanup)

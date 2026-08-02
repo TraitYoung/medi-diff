@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 - `SECURITY.md`, `CITATION.cff`, public `ROADMAP.md`, `docs/README.md` index.
 - UI screenshots under `docs/assets/ui-*.png` (English filenames).
+- GPU mem profiles (`--mem-profile auto|cloud|local|tight`) in
+  `scripts/core/device_profile.py`, wired through generation + assistant CLIs.
+- Gradio speed presets: **本地流畅** (28 steps + `local`) / **云端质量** (40 + `auto`).
+- `scripts/tools/check_local_gpu.py` and README notes for RTX 50-series (cu128).
 
 ### Changed
 
@@ -18,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Removed unrelated SpecForge / job-description docs from the public tree.
 - Moved author migration notes to `docs/private/`.
 - Scrubbed thesis-oriented wording from public evaluation docs and FAQ.
+- `GenParams.num_steps` / CLI default aligned to **40**.
 - `apps/README.md` defaults aligned with `GenParams` (`strength=0.44`, CFG `7.5`, steps `40`, output long side `2048`).
 - Dropped cloud-host hard-coded JPEG candidate paths.
 

@@ -8,7 +8,7 @@ def test_genparams_defaults_match_mainline():
     p = GenParams()
     assert p.strength == 0.44
     assert p.guidance_scale == 7.5
-    assert p.num_steps == 50
+    assert p.num_steps == 40
     assert p.scheduler == "dpm"
     assert p.fullimage_long_side == 768
     assert p.fullimage_output_long_side == 2048

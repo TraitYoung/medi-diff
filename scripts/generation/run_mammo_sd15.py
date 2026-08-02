@@ -504,7 +504,7 @@ def fullimage_generate(
     negative_prompt: str,
     strength: float = 0.42,
     guidance_scale: float = 7.9,
-    num_inference_steps: int = 50,
+    num_inference_steps: int = 40,
     generator: torch.Generator | None = None,
     fullimage_long_side: int = 768,
     fullimage_min_short_side: int = 384,
@@ -726,11 +726,19 @@ def main() -> None:
 
     # Sampling
     g = p.add_argument_group("Sampling")
-    g.add_argument("--num-steps", type=int, default=50)
+    g.add_argument("--num-steps", type=int, default=GenParams.num_steps)
     g.add_argument("--strength", type=float, default=GenParams.strength)
     g.add_argument("--guidance-scale", type=float, default=GenParams.guidance_scale)
     g.add_argument("--negative-prompt", type=str, default=None,
                    help="覆盖 GenParams.negative_prompt")
+    g.add_argument(
+        "--mem-profile",
+        type=str,
+        default="auto",
+        choices=["auto", "cloud", "local", "tight"],
+        help="GPU memory profile: auto picks cloud/local/tight from VRAM "
+             "(local≈10–20GiB consumer GPUs such as 5070 Ti)",
+    )
 
     # Source
     g = p.add_argument_group("Source Selection")
@@ -779,6 +787,23 @@ def main() -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logger.info("Device: %s  Mode: %s", device, args.mode)
 
+    from scripts.core.device_profile import (
+        describe_cuda_environment,
+        log_profile_banner,
+        place_and_optimize_pipe,
+        resolve_mem_profile,
+        should_empty_cache_between_images,
+        warn_if_blackwell_needs_cu128,
+    )
+
+    cuda_env = describe_cuda_environment()
+    mem_profile = resolve_mem_profile(
+        args.mem_profile,
+        total_memory_bytes=cuda_env.total_memory_bytes if cuda_env.available else None,
+    )
+    log_profile_banner(args.mem_profile, mem_profile, cuda_env)
+    warn_if_blackwell_needs_cu128(cuda_env)
+
     # Load model
     from diffusers import StableDiffusionImg2ImgPipeline, DPMSolverMultistepScheduler, DDIMScheduler
 
@@ -789,7 +814,6 @@ def main() -> None:
         torch_dtype=torch.float16 if device.type == "cuda" else torch.float32,
         safety_checker=None,
     )
-    pipe.to(device)
 
     if args.scheduler == "dpm":
         pipe.scheduler = DPMSolverMultistepScheduler.from_config(pipe.scheduler.config)
@@ -808,6 +832,7 @@ def main() -> None:
     else:
         logger.warning("LoRA path not found: %s", lora_path)
 
+    place_and_optimize_pipe(pipe, mem_profile, device)
     logger.info("Model+LoRA loaded in %.1fs", time.time() - t0)
 
     # Source pool
@@ -848,6 +873,12 @@ def main() -> None:
         "guidance_scale": args.guidance_scale,
         "num_steps": args.num_steps,
         "scheduler": args.scheduler,
+        "mem_profile_requested": args.mem_profile,
+        "mem_profile": mem_profile,
+        "gpu_name": cuda_env.device_name or None,
+        "gpu_vram_gib": cuda_env.total_memory_gib if cuda_env.available else None,
+        "torch_version": cuda_env.torch_version,
+        "torch_cuda_version": cuda_env.torch_cuda_version,
         "legacy_label_guard": args.legacy_label_guard,
         "canvas_edge_feather": 3,
         "metadata_csv": str(metadata_csv),
@@ -925,6 +956,8 @@ def main() -> None:
                 "Skip candidate %d due to suspicious lesion-like pattern: %s",
                 idx, lesion_stats,
             )
+            if should_empty_cache_between_images(mem_profile) and device.type == "cuda":
+                torch.cuda.empty_cache()
             continue
 
         # Upscale after cleanup and lesion check so all processing runs at native SD resolution
@@ -935,6 +968,9 @@ def main() -> None:
         Image.fromarray(result).save(out_dir / out_name)
         source_map[out_name] = src_path if src_path else f"pattern_{idx}"
         saved_count += 1
+
+        if should_empty_cache_between_images(mem_profile) and device.type == "cuda":
+            torch.cuda.empty_cache()
 
     if saved_count < args.num_images:
         logger.warning(
