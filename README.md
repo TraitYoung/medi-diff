@@ -6,15 +6,16 @@
 [![CI](https://github.com/TraitYoung/medi-diff/actions/workflows/ci.yml/badge.svg)](https://github.com/TraitYoung/medi-diff/actions/workflows/ci.yml)
 [![HF](https://img.shields.io/badge/Hugging%20Face-TraitYoung-yellow?logo=huggingface)](https://huggingface.co/TraitYoung)
 
+**English** · [简体中文](README.zh-CN.md)
+
 **Synthetic mammography generation with automated quality control.**
 
-**MammoGen** — 面向乳腺钼靶（FFDM）图像的扩散模型生成与自动化质控开源工具链。  
-从 CBIS-DDSM 数据清洗、SD1.5+LoRA 训练，到 16 维规则评估与可选 LLM 报告，一条命令跑通。
+**MammoGen** is an open toolchain for full-field digital mammography (FFDM) synthesis:
+CBIS-DDSM cleaning → SD1.5 + LoRA training → full-image img2img → 16-dim rule-based QC → optional LLM reports.
 
-> **Not for clinical diagnosis.** Research / education / synthetic-data tooling only.  
-> **不用于临床诊断。** 仅供研究、教学与合成数据实验。
+> **Not for clinical diagnosis.** Research / education / synthetic-data tooling only.
 
-仓库 slug：[`medi-diff`](https://github.com/TraitYoung/medi-diff) · 品牌名：**MammoGen**
+Repo slug: [`medi-diff`](https://github.com/TraitYoung/medi-diff) · Product name: **MammoGen**
 
 ---
 
@@ -28,7 +29,7 @@ Most open mammography / medical diffusion repos stop at “train a LoRA and dump
 | **Generation** | SD1.5 + LoRA, default **full-image** img2img (no patch seams), reproducible `--source-seed` |
 | **Evaluation** | 16-dim rule scores + hard/soft gates, plus optional FID/sFID — no GPT-4V required for QC |
 
-Honest baseline: strict `pass_rate` is often around **~50%**. Failure modes (banding, shape oddities) are first-class documentation, not hidden.
+Honest baseline: strict `pass_rate` is often around **~50%**. Failure modes (banding, shape oddities) are documented, not hidden.
 
 ---
 
@@ -103,7 +104,7 @@ python3 scripts/tools/check_local_gpu.py
 # Expect mem-profile(auto) → local on ~12–16 GiB cards, and matmul probe: OK
 ```
 
-Generation uses `--mem-profile auto` by default (`cloud` ≥20 GiB, `local` 10–20 GiB with attention/VAE slicing, `tight` <10 GiB with CPU offload). Gradio defaults to the **本地流畅** preset (28 steps + `local`).
+Generation uses `--mem-profile auto` by default (`cloud` ≥20 GiB, `local` 10–20 GiB with attention/VAE slicing, `tight` <10 GiB with CPU offload). Gradio defaults to the **Local speed** preset (28 steps + `local`; UI label may show Chinese `本地流畅`).
 
 ### 2. Place weights & data
 
@@ -160,9 +161,10 @@ More parameters: see [`apps/README.md`](apps/README.md) and CLI `--help` on `run
 1. **In-domain rules** — groups A–F (16 dims), `hard_tags` / `soft_reasons`, BRISQUE, spectrum β → `ok` / `total_score` for filtering.  
 2. **Generic metrics** — FID/KID, Precision–Recall, sFID when `--real-images-dir` is set → `summary.json → academic_metrics`.
 
-Details: [`docs/评价体系说明.md`](docs/评价体系说明.md) · formulas: [`docs/评估标准说明.md`](docs/评估标准说明.md).
+English overview: [`docs/en/evaluation.md`](docs/en/evaluation.md).  
+Chinese detail: [`docs/评价体系说明.md`](docs/评价体系说明.md) · formulas: [`docs/评估标准说明.md`](docs/评估标准说明.md).
 
-Tip: under `eval_profile=full`, tags like `GRID_SEAM` / `SKIN_LINE_MISSING` are often **soft** penalties. Prefer calibrated baselines that match your density filter; do not treat auto-calibrated `pass_rate=1.0` as ground truth.
+Tip: under `eval_profile=full`, tags like `GRID_SEAM` / `SKIN_LINE_MISSING` are often **soft** penalties. Prefer density-matched real baselines; do not treat auto-calibrated `pass_rate=1.0` as ground truth.
 
 ---
 
@@ -171,13 +173,13 @@ Tip: under `eval_profile=full`, tags like `GRID_SEAM` / `SKIN_LINE_MISSING` are 
 | Path | Role |
 |------|------|
 | `apps/` | Gradio + FastAPI + start/stop |
-| `scripts/core/` | Shared libs (`GenParams`, label guard, image utils) |
+| `scripts/core/` | Shared libs (`GenParams`, label guard, image utils, mem profiles) |
 | `scripts/preprocessing/` | CBIS cleaning & masks |
 | `scripts/training/` | LoRA training |
 | `scripts/generation/` | Mainline `run_mammo_sd15.py` |
 | `scripts/evaluation/` | Rule eval + compare runs |
 | `scripts/assistant/` | Full pipeline + LLM advisor |
-| `docs/` | Guides & design notes |
+| `docs/` | Guides & design notes (`docs/en/` for English) |
 | `archive/` | Retired experiments (not on mainline) |
 | `datasets/`, `outputs/`, `hf_cache/` | Local data/weights (gitignored) |
 
@@ -185,15 +187,11 @@ Tip: under `eval_profile=full`, tags like `GRID_SEAM` / `SKIN_LINE_MISSING` are 
 
 ## Docs
 
-Full index: [`docs/README.md`](docs/README.md).
-
 | Doc | Topic |
 |-----|--------|
-| [用户操作手册](docs/developer/用户操作手册.md) | Install, UI, FAQ |
-| [apps README](apps/README.md) | Gradio vs API, output dirs |
-| [API 接口文档](docs/developer/API接口文档.md) | REST + curl |
-| [评价体系说明](docs/评价体系说明.md) | Dual-track QC metrics |
-| [项目结构说明](docs/developer/项目结构说明.md) | Path responsibilities |
+| [English docs index](docs/en/README.md) | User guide, API, evaluation, layout |
+| [Chinese docs index](docs/README.md) | Full ZH guides + design notes |
+| [apps README](apps/README.md) | Gradio vs API, presets, output dirs |
 | [SECURITY](SECURITY.md) | Vulnerability reporting |
 
 ---
@@ -219,6 +217,8 @@ Full index: [`docs/README.md`](docs/README.md).
 }
 ```
 
+Also see [`CITATION.cff`](CITATION.cff).
+
 ---
 
 ## FAQ
@@ -239,4 +239,4 @@ A: Planned HF Space gallery of pre-generated samples (`TraitYoung/mammo-gallery`
 
 ## Roadmap
 
-See [`ROADMAP.md`](ROADMAP.md) · [`CHANGELOG.md`](CHANGELOG.md) · [`CONTRIBUTING.md`](CONTRIBUTING.md) · [`CITATION.cff`](CITATION.cff).
+See [`ROADMAP.md`](ROADMAP.md) · [`CHANGELOG.md`](CHANGELOG.md) · [`CONTRIBUTING.md`](CONTRIBUTING.md).

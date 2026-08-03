@@ -15,6 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `scripts/core/device_profile.py`, wired through generation + assistant CLIs.
 - Gradio speed presets: **本地流畅** (28 steps + `local`) / **云端质量** (40 + `auto`).
 - `scripts/tools/check_local_gpu.py` and README notes for RTX 50-series (cu128).
+- English project facade: pure-EN root `README.md`, `README.zh-CN.md`, and
+  `docs/en/` (user guide, API, evaluation, layout).
 
 ### Changed
 

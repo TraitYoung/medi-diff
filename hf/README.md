@@ -1,5 +1,7 @@
 # Hugging Face packaging (M3)
 
+Companion GitHub docs: [English README](../README.md) · [docs/en](../docs/en/README.md) · [中文](../README.zh-CN.md).
+
 Target namespaces (personal account):
 
 | Asset | Repo id | Local pack folder |

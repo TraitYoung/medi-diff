@@ -2,6 +2,8 @@
 
 Thanks for interest in improving this project. Short rules keep reviews fast.
 
+Project front doors: [README (English)](README.md) · [README (中文)](README.zh-CN.md) · [docs/en](docs/en/README.md).
+
 ## Before you start
 
 1. Open an issue for non-trivial changes (API, eval thresholds, training defaults).

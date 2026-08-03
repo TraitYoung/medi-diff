@@ -1,6 +1,6 @@
 # Maintainer notes
 
-These files help maintain **MammoGen**. They are **not** the public product docs — start from the root [README](../../README.md) and [docs/README.md](../README.md).
+These files help maintain **MammoGen**. They are **not** the public product docs — start from the root [README (EN)](../../README.md) / [README.zh-CN](../../README.zh-CN.md) and [docs/en](../en/README.md) / [docs/README.md](../README.md).
 
 **Mainline defaults:** `CBIS_CLEAN_V2` + LoRA `mammo_sd15_v6_allMLO` (r=32, all MLO); label guard on by default; generated batches under `outputs/generated/samples/`.
 
